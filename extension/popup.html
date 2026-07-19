@@ -22,16 +22,21 @@
       font-weight: 600;
       cursor: pointer;
     }
+    #prepare { background: #1f6feb; color: white; margin-bottom: 8px; }
     #start { background: #2ea043; color: white; }
     #stop { background: #da3633; color: white; margin-top: 8px; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
+    #prepared { font-size: 12px; margin: 0 0 12px; color: #8a8f98; min-height: 16px; }
     #status { font-size: 12px; margin-top: 12px; color: #8a8f98; min-height: 16px; }
     .recording { color: #f0883e !important; }
+    .ready { color: #2ea043 !important; }
   </style>
 </head>
 <body>
   <h1>SignStream</h1>
   <p id="video-id">No YouTube video detected</p>
+  <button id="prepare">Prepare captions</button>
+  <p id="prepared"></p>
   <button id="start">Start capture</button>
   <button id="stop" disabled>Stop capture</button>
   <p id="status"></p>

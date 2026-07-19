@@ -25,11 +25,24 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "OFFSCREEN_STOP") stopCapture();
 });
 
-async function startCapture({ streamId, videoId: vid }) {
+// Ask the content script (via the service worker) for the video's live
+// currentTime. This is the source of truth for alignment — reading it live
+// survives pause, seek, and playback-speed changes, which wall-clock math
+// cannot. Returns seconds, or 0 if unavailable.
+async function sampleVideoTime() {
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "SAMPLE_VIDEO_TIME" });
+    return resp && typeof resp.videoTime === "number" ? resp.videoTime : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+async function startCapture({ streamId, videoId: vid, sessionId: sid }) {
   if (mediaStream) return; // already running
 
   videoId = vid || "unknown";
-  sessionId = `${videoId}-${Date.now()}`;
+  sessionId = sid || `${videoId}-${Date.now()}`;
   chunkIndex = 0;
   stopping = false;
 
@@ -65,9 +78,17 @@ function startNewRecorderCycle() {
     if (e.data && e.data.size > 0) parts.push(e.data);
   };
 
-  recorder.onstop = () => {
+  recorder.onstop = async () => {
     const blob = new Blob(parts, { type: "audio/webm" });
-    if (blob.size > 0) uploadChunk(blob, chunkIndex++);
+    if (blob.size > 0) {
+      // Live video time at this chunk's start and end. Sampling the actual
+      // <video>.currentTime (not wall-clock math) keeps captions aligned
+      // through pause/seek/speed changes. The 10s chunk guarantees the start
+      // sample has resolved by now.
+      const startT = await startSample;
+      const endT = await sampleVideoTime();
+      uploadChunk(blob, chunkIndex++, startT, endT);
+    }
 
     if (stopping) {
       cleanup();
@@ -78,17 +99,21 @@ function startNewRecorderCycle() {
   };
 
   recorder.start();
+  // Sample the video's live currentTime at the instant this chunk started.
+  const startSample = sampleVideoTime();
   chunkTimer = setTimeout(() => {
     if (recorder && recorder.state === "recording") recorder.stop();
   }, CHUNK_MS);
 }
 
-async function uploadChunk(blob, index) {
+async function uploadChunk(blob, index, videoTimeStart, videoTimeEnd) {
   const form = new FormData();
   form.append("audio", blob, `chunk-${index}.webm`);
   form.append("video_id", videoId);
   form.append("session_id", sessionId);
   form.append("chunk_index", String(index));
+  form.append("video_time_offset", String(videoTimeStart));
+  form.append("video_time_end", String(videoTimeEnd));
   form.append("captured_at", new Date().toISOString());
 
   try {
