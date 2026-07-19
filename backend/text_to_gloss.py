@@ -151,13 +151,10 @@ def _get_client():
 
 
 def to_gloss(text: str) -> list:
-    """Translate an English transcript span into an ASL Gloss token list.
-
-    Cleans the text (process_transcript_pipeline), then either calls Gemini with
-    SYSTEM_PROMPT or — when no key is set — falls back to a naive uppercase
-    tokenizer so the whole path is testable offline. Returns a list of UPPERCASE
-    string tokens (empty list for empty input). Never raises: any model/parse
-    failure degrades to the mock tokenizer so a caption is never left blank."""
+    """
+    Translate an English transcript span into an ASL Gloss token list.
+    """
+    
     if not text or not text.strip():
         return []
 
