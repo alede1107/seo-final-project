@@ -4,7 +4,7 @@ import json
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -24,7 +24,7 @@ def normalize_text(text: str) -> list[str]:
     return [word for word in cleaned.split() if word]
 
 
-def process_chunk(chunk: dict[str, Any]) -> list[dict[str, Any]]:
+def process_chunk(chunk: dict[str, Any]) -> Optional[dict[str, Any]]:
     """
     Process one finalized transcript chunk.
 
@@ -37,30 +37,24 @@ def process_chunk(chunk: dict[str, Any]) -> list[dict[str, Any]]:
         "end": float | int | None,
     }
 
-    Returns every matched vocabulary payload in transcript order.
+    Returns a match payload when a vocabulary word is found, otherwise None.
     """
     if not chunk.get("is_final"):
-        return []
+        return None
 
     text = chunk.get("text", "")
     words = normalize_text(text)
     word_to_url = load_word_to_url_map()
 
-    matches: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for index, word in enumerate(words):
-        if word in word_to_url and word not in seen:
-            seen.add(word)
-            matches.append(
-                {
-                    "speaker": chunk.get("speaker"),
-                    "word": word,
-                    "clip_url": word_to_url[word],
-                    "start": chunk.get("start"),
-                    "end": chunk.get("end"),
-                    "text": text,
-                    "word_index": index,
-                }
-            )
+    for word in words:
+        if word in word_to_url:
+            return {
+                "speaker": chunk.get("speaker"),
+                "word": word,
+                "clip_url": word_to_url[word],
+                "start": chunk.get("start"),
+                "end": chunk.get("end"),
+                "text": text,
+            }
 
-    return matches
+    return None

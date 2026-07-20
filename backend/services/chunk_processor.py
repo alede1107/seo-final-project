@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 
 
-BASE_DIR = Path(__file__).resolve().parents[1]
+BASE_DIR = Path(__file__).resolve().parents[2]
 WORD_TO_URL_PATH = BASE_DIR / "word_to_url.json"
-
+print(WORD_TO_URL_PATH)
 
 @lru_cache(maxsize=1)
 def load_word_to_url_map() -> dict[str, str]:

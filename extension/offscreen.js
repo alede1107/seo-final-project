@@ -2,23 +2,22 @@
 // Runs in the offscreen document. This is the only extension context that
 // can hold the MediaStream. It:
 //   1. Opens the tab audio stream via getUserMedia + the stream ID.
-//   2. Pipes audio back to the speakers.
-//   3. Converts the live stream to 16 kHz mono PCM16 and forwards it to the
-//      backend in near-real time.
+//   2. Pipes audio back to the speakers (tabCapture MUTES the tab otherwise).
+//   3. Records self-contained WebM chunks by restarting MediaRecorder,
+//      NOT by using timeslice (timeslice chunks after the first are
+//      headerless and unplayable as standalone files).
+//   4. POSTs each chunk to the Flask backend.
 
-const BACKEND_URL = "http://localhost:5001";
-const STREAM_SAMPLE_RATE = 16000;
-const FLUSH_SAMPLES = 4000; // 250ms at 16 kHz
+const BACKEND_URL = "http://localhost:5001/upload";
+const CHUNK_MS = 10_000; // 10-second chunks
 
 let mediaStream = null;
-let audioCtx = null;
-let sourceNode = null;
-let processorNode = null;
+let recorder = null;
+let chunkTimer = null;
 let stopping = false;
-let flushing = false;
+let chunkIndex = 0;
 let sessionId = null;
 let videoId = null;
-let pcmBuffer = new Float32Array(0);
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== "offscreen") return;
@@ -26,6 +25,10 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "OFFSCREEN_STOP") stopCapture();
 });
 
+// Ask the content script (via the service worker) for the video's live
+// currentTime. This is the source of truth for alignment — reading it live
+// survives pause, seek, and playback-speed changes, which wall-clock math
+// cannot. Returns seconds, or 0 if unavailable.
 async function sampleVideoTime() {
   try {
     const resp = await chrome.runtime.sendMessage({ type: "SAMPLE_VIDEO_TIME" });
@@ -40,16 +43,8 @@ async function startCapture({ streamId, videoId: vid, sessionId: sid }) {
 
   videoId = vid || "unknown";
   sessionId = sid || `${videoId}-${Date.now()}`;
+  chunkIndex = 0;
   stopping = false;
-
-  const startRes = await fetch(`${BACKEND_URL}/stream/start`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ video_id: videoId, session_id: sessionId }),
-  });
-  if (!startRes.ok) {
-    throw new Error(`stream start failed: ${startRes.status}`);
-  }
 
   mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: {
@@ -61,160 +56,92 @@ async function startCapture({ streamId, videoId: vid, sessionId: sid }) {
     video: false,
   });
 
-  audioCtx = new AudioContext();
-  sourceNode = audioCtx.createMediaStreamSource(mediaStream);
-  processorNode = audioCtx.createScriptProcessor(2048, Math.max(1, sourceNode.channelCount || 2), 1);
+  // CRITICAL: tabCapture silences the tab for the user. Re-route the
+  // audio to the default output so the video still plays sound.
+  const audioCtx = new AudioContext();
+  const source = audioCtx.createMediaStreamSource(mediaStream);
+  source.connect(audioCtx.destination);
 
-  processorNode.onaudioprocess = (event) => {
-    if (stopping) return;
+  startNewRecorderCycle();
+}
 
-    const input = event.inputBuffer;
-    const output = event.outputBuffer;
-    const mono = mixDownToMono(input);
+function startNewRecorderCycle() {
+  if (!mediaStream || stopping) return;
 
-    // Keep audio audible while we tap the stream.
-    output.getChannelData(0).set(mono);
+  recorder = new MediaRecorder(mediaStream, {
+    mimeType: "audio/webm;codecs=opus",
+    audioBitsPerSecond: 64_000,
+  });
 
-    const resampled = downsampleBuffer(mono, audioCtx.sampleRate, STREAM_SAMPLE_RATE);
-    appendFloat32(resampled);
+  const parts = [];
+  recorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) parts.push(e.data);
+  };
 
-    if (!flushing && pcmBuffer.length >= FLUSH_SAMPLES) {
-      flushBufferedAudio().catch((err) => console.error("flushBufferedAudio failed:", err));
+  recorder.onstop = async () => {
+    const blob = new Blob(parts, { type: "audio/webm" });
+    if (blob.size > 0) {
+      // Live video time at this chunk's start and end. Sampling the actual
+      // <video>.currentTime (not wall-clock math) keeps captions aligned
+      // through pause/seek/speed changes. The 10s chunk guarantees the start
+      // sample has resolved by now.
+      const startT = await startSample;
+      const endT = await sampleVideoTime();
+      uploadChunk(blob, chunkIndex++, startT, endT);
+    }
+
+    if (stopping) {
+      cleanup();
+    } else {
+      // Immediately begin the next self-contained chunk.
+      startNewRecorderCycle();
     }
   };
 
-  sourceNode.connect(processorNode);
-  processorNode.connect(audioCtx.destination);
+  recorder.start();
+  // Sample the video's live currentTime at the instant this chunk started.
+  const startSample = sampleVideoTime();
+  chunkTimer = setTimeout(() => {
+    if (recorder && recorder.state === "recording") recorder.stop();
+  }, CHUNK_MS);
 }
 
-function mixDownToMono(inputBuffer) {
-  const channels = inputBuffer.numberOfChannels || 1;
-  const length = inputBuffer.length;
-  if (channels === 1) {
-    return inputBuffer.getChannelData(0).slice(0);
-  }
+async function uploadChunk(blob, index, videoTimeStart, videoTimeEnd) {
+  const form = new FormData();
+  form.append("audio", blob, `chunk-${index}.webm`);
+  form.append("video_id", videoId);
+  form.append("session_id", sessionId);
+  form.append("chunk_index", String(index));
+  form.append("video_time_offset", String(videoTimeStart));
+  form.append("video_time_end", String(videoTimeEnd));
+  form.append("captured_at", new Date().toISOString());
 
-  const mono = new Float32Array(length);
-  for (let ch = 0; ch < channels; ch++) {
-    const data = inputBuffer.getChannelData(ch);
-    for (let i = 0; i < length; i++) {
-      mono[i] += data[i] / channels;
-    }
-  }
-  return mono;
-}
-
-function downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
-  if (outputSampleRate === inputSampleRate) return buffer.slice(0);
-  if (outputSampleRate > inputSampleRate) {
-    throw new Error("outputSampleRate must be <= inputSampleRate");
-  }
-
-  const ratio = inputSampleRate / outputSampleRate;
-  const newLength = Math.floor(buffer.length / ratio);
-  const result = new Float32Array(newLength);
-  let offsetResult = 0;
-  let offsetBuffer = 0;
-
-  while (offsetResult < result.length) {
-    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
-    let accum = 0;
-    let count = 0;
-    for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
-      accum += buffer[i];
-      count++;
-    }
-    result[offsetResult] = count > 0 ? accum / count : 0;
-    offsetResult++;
-    offsetBuffer = nextOffsetBuffer;
-  }
-
-  return result;
-}
-
-function appendFloat32(chunk) {
-  if (!chunk || chunk.length === 0) return;
-  const merged = new Float32Array(pcmBuffer.length + chunk.length);
-  merged.set(pcmBuffer, 0);
-  merged.set(chunk, pcmBuffer.length);
-  pcmBuffer = merged;
-}
-
-function float32ToInt16(buffer) {
-  const out = new Int16Array(buffer.length);
-  for (let i = 0; i < buffer.length; i++) {
-    const sample = Math.max(-1, Math.min(1, buffer[i]));
-    out[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-  }
-  return out;
-}
-
-async function flushBufferedAudio(force = false) {
-  if (flushing || (!force && pcmBuffer.length < FLUSH_SAMPLES)) return;
-  flushing = true;
   try {
-    while (pcmBuffer.length >= FLUSH_SAMPLES || (force && pcmBuffer.length > 0)) {
-      const take = force && pcmBuffer.length < FLUSH_SAMPLES ? pcmBuffer.length : FLUSH_SAMPLES;
-      const chunk = pcmBuffer.slice(0, take);
-      pcmBuffer = pcmBuffer.slice(take);
-
-      const endT = await sampleVideoTime();
-      const duration = chunk.length / STREAM_SAMPLE_RATE;
-      const startT = Math.max(0, endT - duration);
-      const payload = float32ToInt16(chunk);
-
-      const res = await fetch(`${BACKEND_URL}/stream/${encodeURIComponent(sessionId)}/chunk?video_time_offset=${encodeURIComponent(startT)}&video_time_end=${encodeURIComponent(endT)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: payload.buffer,
-      });
-      if (!res.ok) {
-        console.error(`Live stream chunk upload failed: ${res.status}`);
-      }
+    const res = await fetch(BACKEND_URL, { method: "POST", body: form });
+    if (!res.ok) {
+      console.error(`Upload failed for chunk ${index}: ${res.status}`);
     }
-  } finally {
-    flushing = false;
-  }
-}
-
-async function stopCapture() {
-  stopping = true;
-  try {
-    await flushBufferedAudio(true);
   } catch (err) {
-    console.error("final flush failed:", err);
+    // Backend down or unreachable. Log and move on; do not kill capture.
+    console.error(`Upload error for chunk ${index}:`, err);
   }
+}
 
-  try {
-    await fetch(`${BACKEND_URL}/stream/${encodeURIComponent(sessionId)}/stop`, { method: "POST" });
-  } catch (_) {}
-
-  cleanup();
+function stopCapture() {
+  stopping = true;
+  clearTimeout(chunkTimer);
+  if (recorder && recorder.state === "recording") {
+    recorder.stop(); // onstop handles the final upload + cleanup
+  } else {
+    cleanup();
+  }
 }
 
 function cleanup() {
-  if (processorNode) {
-    try {
-      processorNode.disconnect();
-    } catch (_) {}
-    processorNode.onaudioprocess = null;
-    processorNode = null;
-  }
-  if (sourceNode) {
-    try {
-      sourceNode.disconnect();
-    } catch (_) {}
-    sourceNode = null;
-  }
-  if (audioCtx) {
-    audioCtx.close().catch(() => {});
-    audioCtx = null;
-  }
   if (mediaStream) {
     mediaStream.getTracks().forEach((t) => t.stop());
     mediaStream = null;
   }
-  pcmBuffer = new Float32Array(0);
-  flushing = false;
+  recorder = null;
   chrome.runtime.sendMessage({ type: "OFFSCREEN_DONE" });
 }
