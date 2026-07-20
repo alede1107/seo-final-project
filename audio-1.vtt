@@ -1,0 +1,7 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:02.500
+No transcription provider configured.
+
+00:00:02.500 --> 00:00:05.000
+Set ASSEMBLYAI_API_KEY or WHISPER_BACKEND=local.

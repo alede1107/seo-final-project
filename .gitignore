@@ -4,3 +4,11 @@ __pycache__/
 venv/
 *.db
 .DS_Store
+
+/backend/.env
+/backend/venv
+
+CLAUDE.md
+README.md
+.gitignore
+
