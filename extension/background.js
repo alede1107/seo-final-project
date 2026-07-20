@@ -1,4 +1,3 @@
-// background.js (MV3 service worker)
 // Orchestration only. It cannot hold a MediaStream, so it:
 //   - creates/destroys the offscreen document (which does the capturing)
 //   - reads the video's currentTime from the content script at capture start
@@ -24,10 +23,6 @@ async function ensureOffscreenDocument() {
   });
 }
 
-// Make sure content.js is present in the tab even if the extension was loaded
-// after the YouTube page. The declared content script covers future
-// navigations; this covers the already-open tab. content.js guards against
-// double-init.
 async function ensureContentScript(tabId) {
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
