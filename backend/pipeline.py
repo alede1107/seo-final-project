@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 """
 Transcription pipeline + caption store for Phase 2.
 
@@ -783,6 +784,8 @@ def _transcribe(audio_url, video_id, session_id, chunk_index):
     except Exception as e:  # noqa: BLE001 — worker thread must never crash silently
         _mark_error(session_id, chunk_index, e)
 =======
+=======
+>>>>>>> parent of e8197fb (reduce live caption lag and refresh live sign rendering)
 """
 Transcription pipeline + caption store for Phase 2.
 
