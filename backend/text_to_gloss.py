@@ -5,9 +5,12 @@ Text to ASL constrants:
     - Deaf people typically do not sign "YOU WHAT NAME?"
     - Deaf people typically do not sign "YOU NAME WHAT?"
     - Deaf people do typically sign "YOU NAME?"
-    - Reference: https://www.lifeprint.com/asl101/topics/gloss.htm#gsc.tab=0
 
+    
+Reference: https://www.lifeprint.com/asl101/topics/gloss.htm#gsc.tab=0
 
+TODO: testing gloss outputs accuracy from ASL example.
+TODO: tokenizer tests
 """
 
 import json
@@ -17,7 +20,7 @@ from google.genai import types
 from google import genai
 
 # Model Level
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 SYSTEM_PROMPT = """
 
 You are an expert English-to-ASL Gloss translator. Your task is to take English transcripts and convert them into ASL Gloss. 
