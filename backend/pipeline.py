@@ -684,19 +684,26 @@ def _prepare(video_id, audio_url):
             # path is testable with no API key and no network.
             for idx in range(3):
                 offset = idx * 10.0
+                mock_text = f"[mock prepared caption {idx}]"
+                mock_chunk = {"is_final": True, "text": mock_text, "start": offset, "end": offset + 10.0, "speaker": None}
+                sign_matches = process_chunk(mock_chunk)
+                sign_match = sign_matches[0] if sign_matches else None
                 insert_ready(
                     video_id, session_id, idx, offset, offset + 10.0,
-                    f"[mock prepared caption {idx}]",
+                    mock_text,
                     [{"text": "[mock]", "start": 0, "end": 500}],
-                    None,
-                    None,
+                    sign_match,
+                    sign_matches=sign_matches,
                 )
             _set_prepared(video_id, "ready")
             return
 
         words = _transcribe_words(audio_url)
         for idx, (offset, end, text, bucket) in enumerate(_segment_words(words)):
-            insert_ready(video_id, session_id, idx, offset, end, text, bucket, None, None)
+            chunk = {"is_final": True, "text": text, "start": offset, "end": end, "speaker": None}
+            sign_matches = process_chunk(chunk)
+            sign_match = sign_matches[0] if sign_matches else None
+            insert_ready(video_id, session_id, idx, offset, end, text, bucket, sign_match, sign_matches=sign_matches)
         _set_prepared(video_id, "ready")
     except Exception as e:  # noqa: BLE001 — worker thread must never crash silently
         _set_prepared(video_id, "error", str(e))
