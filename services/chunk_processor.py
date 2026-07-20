@@ -18,7 +18,8 @@ _WORD_MAP_PATH = Path(__file__).resolve().parents[1] / "word_to_url.json"
 
 @lru_cache(maxsize=1)
 def load_word_map() -> dict:
-    """Load and cache the WLASL word → clip-URL map. Returns {} if missing."""
+    """Load and cache the WLASL word 
+        to clip-URL map. Returns {} if missing."""
     try:
         with open(_WORD_MAP_PATH, encoding="utf-8") as f:
             return json.load(f)
