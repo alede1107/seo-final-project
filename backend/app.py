@@ -13,35 +13,19 @@ import os
 import re
 import shutil
 import tempfile
-
+import yt_dlp
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-load_dotenv(override=True)
-
 import pipeline
-=======
-=======
->>>>>>> parent of e8197fb (reduce live caption lag and refresh live sign rendering)
-=======
->>>>>>> parent of e8197fb (reduce live caption lag and refresh live sign rendering)
-from . import pipeline
->>>>>>> parent of e8197fb (reduce live caption lag and refresh live sign rendering)
 
-load_dotenv(override=True)
-
-load_dotenv(override=True)
-
-load_dotenv(override=True)
+load_dotenv()
 
 app = Flask(__name__)
 
-S3_BUCKET = os.environ.get("S3_BUCKET", "").strip()
+S3_BUCKET = os.environ.get("S3_BUCKET")
 s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
@@ -49,10 +33,7 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 pipeline.init_db()
 
 
-# --- CORS ---------------------------------------------------------------
-# Manual CORS. Do NOT reintroduce flask-cors: v4.x returns 403 for
-# chrome-extension:// origins with default settings. Lock the origin down to
-# the extension id before any public deployment.
+# TODO : Lock the origin down to the extension id before any public deployment.
 @app.after_request
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -146,14 +127,12 @@ def upload():
 
     return jsonify({"ok": True, "key": key}), 201
 
-
-# --- Whole-video prepare path ------------------------------------------
 def _download_audio(video_id):
     """Download bestaudio for a YouTube video_id to a temp file via yt-dlp.
     Returns (path, ext, tmpdir). The caller must delete tmpdir when done (the
     local file is only needed until the S3 put; AssemblyAI pulls from S3 after).
     Raises on failure (caller maps to 502)."""
-    import yt_dlp
+    
 
     tmpdir = tempfile.mkdtemp(prefix="captionaid-")
     outtmpl = os.path.join(tmpdir, "%(id)s.%(ext)s")
@@ -215,8 +194,8 @@ def prepare():
     except Exception as e:  # noqa: BLE001 — yt-dlp/ffmpeg failures
         app.logger.error("audio download failed: %s", e)
         return jsonify({"error": "audio download failed"}), 502
+    
     finally:
-        # The bytes now live in S3; the local temp dir is no longer needed.
         if tmpdir is not None:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -228,8 +207,7 @@ def prepare():
 def prepare_status(video_id):
     return jsonify(pipeline.get_prepared(video_id))
 
-
-# --- Caption read endpoints --------------------------------------------
+# CAPTION READ 
 @app.route("/captions/<session_id>/<int:chunk_index>", methods=["GET"])
 def caption_chunk(session_id, chunk_index):
     chunk = pipeline.get_chunk(session_id, chunk_index)
@@ -251,5 +229,4 @@ def caption_video(video_id):
 
 
 if __name__ == "__main__":
-    # threaded=True so caption polling isn't blocked while a chunk uploads.
     app.run(host="127.0.0.1", port=5001, debug=True, threaded=True)

@@ -1,6 +1,4 @@
-// offscreen.js
-// Runs in the offscreen document. This is the only extension context that
-// can hold the MediaStream. It:
+
 //   1. Opens the tab audio stream via getUserMedia + the stream ID.
 //   2. Pipes audio back to the speakers (tabCapture MUTES the tab otherwise).
 //   3. Records self-contained WebM chunks by restarting MediaRecorder,
@@ -9,7 +7,7 @@
 //   4. POSTs each chunk to the Flask backend.
 
 const BACKEND_URL = "http://localhost:5001/upload";
-const CHUNK_MS = 10_000; // 10-second chunks
+const CHUNK_MS = 10000; // 10-second chunks
 
 let mediaStream = null;
 let recorder = null;
