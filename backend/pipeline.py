@@ -110,13 +110,18 @@ def _row_to_dict(row):
     }
 
 
-def _gloss_and_clips(text):
-    """Translate a caption's English text to ASL gloss and match sign clips.
-    Returns (gloss_tokens, clips). Never raises — a failure yields ([], []) so
-    a caption still stores its English text and words."""
+def _gloss_and_clips(text, words=None, chunk_duration=None):
+    """
+    Translate a caption's English text to ASL gloss and match sign clips
+
+    Returns (gloss_tokens, clips). 
+        At error or no match - Return ([], []) so
+    a caption still stores its English text and words
+    
+    """
     try:
         gloss = to_gloss(text or "")
-        clips = match_gloss(gloss)
+        clips = match_gloss(gloss, words=words, chunk_duration=chunk_duration)
         return gloss, clips
     except Exception:  # noqa: BLE001 — gloss is additive; never break the caption
         return [], []
@@ -161,7 +166,24 @@ def insert_ready(video_id, session_id, chunk_index, video_time_offset, video_tim
 def _mark_ready(session_id, chunk_index, text, words):
     # Live path: translate to ASL gloss + match sign clips as the row becomes
     # ready, so the overlay gets gloss/clips alongside the English text.
-    gloss, clips = _gloss_and_clips(text)
+    with _lock:
+        row = _conn.execute(
+            "SELECT video_time_offset, video_time_end FROM captions "
+            "WHERE session_id=? AND chunk_index=?",
+            (session_id, chunk_index),
+        ).fetchone()
+    chunk_duration = None
+
+    # validate chunk duration for each row, incases where overall video length is <10s or last row is <10
+    if row:
+        d = (row["video_time_end"] or 0) - (row["video_time_offset"] or 0)
+        if d > 0:
+            chunk_duration = d
+        else:
+            chunk_duration = 10.0
+
+    gloss, clips = _gloss_and_clips(text, words = words, chunk_duration=chunk_duration)
+
     with _lock:
         _conn.execute(
             "UPDATE captions SET status='ready', text=?, words_json=?, gloss_json=?, "
@@ -306,19 +328,18 @@ def _prepare(video_id, audio_url):
             for idx in range(3):
                 offset = idx * 10.0
                 text = f"the book is on the highway {idx}"
-                gloss, clips = _gloss_and_clips(text)
+                mock_words = [{"text": "[mock]", "start": 0, "end": 500}]
+                gloss, clips = _gloss_and_clips(text, words=mock_words, chunk_duration=10.0)
                 insert_ready(
                     video_id, session_id, idx, offset, offset + 10.0,
-                    text,
-                    [{"text": "[mock]", "start": 0, "end": 500}],
-                    gloss, clips,
+                    text, mock_words, gloss, clips,
                 )
             _set_prepared(video_id, "ready")
             return
 
         words = _transcribe_words(audio_url)
         for idx, (offset, end, text, bucket) in enumerate(_segment_words(words)):
-            gloss, clips = _gloss_and_clips(text)
+            gloss, clips = _gloss_and_clips(text, words=bucket, chunk_duration=end - offset)
             insert_ready(video_id, session_id, idx, offset, end, text, bucket, gloss, clips)
         _set_prepared(video_id, "ready")
     except Exception as e:  # noqa: BLE001 — worker thread must never crash silently

@@ -48,30 +48,32 @@ if (!window.__captionAidLoaded) {
     const root = host.attachShadow({ mode: "open" });
     root.innerHTML = `
       <style>
-        .box { width: 360px; max-height: 320px; background: rgba(15,15,18,0.92);
+        .box { width: 360px; background: rgba(15,15,18,0.92);
                color: #f2f2f2; border: 1px solid #333; border-radius: 10px;
                font: 13px/1.45 system-ui, sans-serif; box-shadow: 0 8px 28px rgba(0,0,0,.5);
                display: flex; flex-direction: column; overflow: hidden; }
         .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-               background: #1d1d22; cursor: move; user-select: none; }
+               background: #1d1d22; cursor: move; user-select: none; flex-shrink: 0; }
         .bar b { font-size: 12px; letter-spacing: .3px; }
         .toggle { margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: .5px;
                   background: #2b2b33; color: #cfe6ff; border: 1px solid #3a3a44;
                   border-radius: 5px; padding: 2px 7px; cursor: pointer; }
         .toggle:hover { background: #34343d; }
         .lag { font-size: 11px; color: #ffcb6b; }
-        .list { padding: 6px 4px; overflow-y: auto; }
-        .line { padding: 5px 8px; border-radius: 6px; cursor: pointer; display: flex; gap: 8px; }
+        .clips { border-bottom: 1px solid #333; padding: 8px; display: none; flex-direction: column;
+                 align-items: center; gap: 4px; background: #141418; flex-shrink: 0; }
+        .clips.on { display: flex; }
+        .clipvid { width: 100%; height: 160px; object-fit: contain; border-radius: 6px; background: #000; }
+        .cliplabel { font-size: 11px; color: #9fd0ff; font-variant-numeric: tabular-nums; }
+        .list { padding: 6px 4px; overflow-y: auto; max-height: 180px; }
+        .line { padding: 5px 8px; border-radius: 6px; cursor: pointer; display: flex; gap: 8px;
+                border-left: 2px solid transparent; }
         .line:hover { background: #26262d; }
+        .line.current { background: rgba(255, 204, 0, 0.15); border-left-color: #ffcc00; }
         .t { color: #7fbfff; flex: 0 0 44px; font-variant-numeric: tabular-nums; }
         .cached .t { color: #8a8a8a; }
         .txt { flex: 1; }
         .empty { padding: 10px; color: #999; }
-        .clips { border-top: 1px solid #333; padding: 8px; display: none; flex-direction: column;
-                 align-items: center; gap: 4px; background: #141418; }
-        .clips.on { display: flex; }
-        .clipvid { width: 100%; max-width: 220px; border-radius: 6px; background: #000; }
-        .cliplabel { font-size: 11px; color: #9fd0ff; font-variant-numeric: tabular-nums; }
       </style>
       <div class="box">
         <div class="bar" part="bar">
@@ -79,11 +81,11 @@ if (!window.__captionAidLoaded) {
           <span class="lag" id="lag"></span>
           <button class="toggle" id="toggle" title="Toggle ASL gloss / English">ASL</button>
         </div>
-        <div class="list" id="list"><div class="empty">Waiting for captions…</div></div>
         <div class="clips" id="clips">
           <video class="clipvid" id="clipvid" muted playsinline></video>
           <div class="cliplabel" id="cliplabel"></div>
         </div>
+        <div class="list" id="list"><div class="empty">Waiting for captions…</div></div>
       </div>`;
 
     const listEl = root.getElementById("list");
@@ -238,10 +240,32 @@ if (!window.__captionAidLoaded) {
       return;
     }
     const clip = clips[clipIdx];
-    ui.clipVid.src = clip.url;
-    ui.clipLabel.textContent = `${clip.token} (${clipIdx + 1}/${clips.length})`;
-    ui.clipVid.play().catch(() => {});
     clipIdx += 1;
+    const vid = ui.clipVid;
+    ui.clipLabel.textContent = `${clip.token} (${clipIdx}/${clips.length})`;
+
+    vid.onloadedmetadata = () => {
+      vid.onloadedmetadata = null;
+      if (clip.target_duration > 0 && vid.duration > 0) {
+        vid.playbackRate = Math.min(Math.max(vid.duration / clip.target_duration, 0.25), 4.0);
+      } else {
+        vid.playbackRate = 1.0;
+      }
+      vid.play().catch(() => {});
+    };
+    vid.src = clip.url;
+  }
+
+  function updateCurrentLine(t) {
+    if (!ui) return;
+    const seg = activeSegmentFor(t);
+    let currentLine = null;
+    for (const line of ui.listEl.querySelectorAll(".line")) {
+      const active = seg !== null && Number(line.dataset.time) === seg.offset;
+      line.classList.toggle("current", active);
+      if (active) currentLine = line;
+    }
+    if (currentLine) currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
   function driveClips() {
@@ -249,12 +273,14 @@ if (!window.__captionAidLoaded) {
     const v = getVideo();
     ui.clipsEl.classList.toggle("on", segments.length > 0);
     if (!v) return;
+    const t = v.currentTime;
+    updateCurrentLine(t);
     // Mirror the page video's play/pause state.
     if (v.paused) {
       if (!ui.clipVid.paused) ui.clipVid.pause();
       return;
     }
-    const seg = activeSegmentFor(v.currentTime);
+    const seg = activeSegmentFor(t);
     if (seg && seg !== activeSeg) {
       playSegment(seg); // segment changed — restart its clip queue
     } else if (ui.clipVid.paused && ui.clipVid.src) {

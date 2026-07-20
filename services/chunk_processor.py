@@ -33,18 +33,60 @@ def _normalize(token: str) -> str:
     return re.sub(r"[^a-z0-9']+", " ", token.lower()).strip()
 
 
-def match_gloss(tokens) -> list:
+def match_gloss(tokens, words=None, chunk_duration=None) -> list:
     """Map ASL gloss tokens to sign clips in gloss order.
 
-    Returns [{"token", "url"}, ...]. Tokens with no dictionary entry (e.g.
-    QUESTION-MARK, HERSELF) are skipped rather than mismatched."""
+    Returns [{"token", "url", "target_duration"}, ...]. target_duration (seconds)
+    is how long the clip should play so the full set fits within chunk_duration.
+    Proportions come from word-level timing in `words`; falls back to equal
+    distribution when timing is unavailable. Tokens with no dictionary entry
+    (e.g. QUESTION-MARK, HERSELF) are skipped."""
     word_map = load_word_map()
-    out = []
+    cd = chunk_duration if chunk_duration and chunk_duration > 0 else 10.0
+
+    # Build normalized-word → duration-in-seconds map from AssemblyAI word list.
+    word_dur: dict[str, float] = {}
+    for w in (words or []):
+        norm = re.sub(r"[^a-z0-9']+", " ", (w.get("text") or "").lower()).strip()
+        dur = max(0.0, (w.get("end", 0) - w.get("start", 0)) / 1000.0)
+        if norm:
+            word_dur[norm] = word_dur.get(norm, 0.0) + dur
+
+    # Match tokens to clip URLs and stash per-token word durations.
+    matched: list[dict] = []
     for token in tokens or []:
         norm = _normalize(str(token))
         if norm and (url := word_map.get(norm)):
-            out.append({"token": str(token).upper(), "url": url})
-    return out
+            matched.append({
+                "token": str(token).upper(),
+                "url": url,
+                "_wd": word_dur.get(norm),  # seconds; None if not in words
+            })
+
+    if not matched:
+        return []
+
+    total_wd = sum(c["_wd"] for c in matched if c["_wd"] is not None)
+
+    if total_wd > 0:
+        # Proportional: each clip's share = (its word duration / total) * chunk.
+        timed = [c for c in matched if c["_wd"] is not None]
+        untimed = [c for c in matched if c["_wd"] is None]
+        for c in timed:
+            c["target_duration"] = round(max(0.1, (c["_wd"] / total_wd) * cd), 3)
+        if untimed:
+            used = sum(c["target_duration"] for c in timed)
+            share = max(0.1, (cd - used) / len(untimed))
+            for c in untimed:
+                c["target_duration"] = round(share, 3)
+    else:
+        # No word timing — distribute chunk evenly.
+        equal = round(max(0.1, cd / len(matched)), 3)
+        for c in matched:
+            c["target_duration"] = equal
+
+    return [{"token": c["token"], "url": c["url"], "target_duration": c["target_duration"]}
+            for c in matched]
 
 
 def process_chunk(chunk: dict[str, Any]) -> list[dict[str, Any]]:
