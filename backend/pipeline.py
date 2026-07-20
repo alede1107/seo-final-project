@@ -1,5 +1,5 @@
 """
-Transcription pipeline + caption store for Phase 2.
+Transcription pipeline + caption store 
 
 Flow:
     /upload writes the chunk to S3, then calls transcribe_async(...) which
@@ -7,19 +7,14 @@ Flow:
     in a local SQLite table keyed (session_id, chunk_index). The extension's
     content script polls the /captions endpoints to read it back.
 
-Why SQLite + a thread pool instead of Celery: this is a single-user vertical
-slice. A thread pool is three lines and zero infrastructure. Swap in a real
-queue only if concurrency actually hurts.
-
 Time alignment:
-    Each chunk carries `video_time_offset` — the video's currentTime (seconds)
+    Each chunk carries `video_time_offset` - the video's currentTime (seconds)
     at the moment that chunk started recording. AssemblyAI returns word
     timestamps in ms from the start of the chunk, so:
 
         word_video_time = video_time_offset + (word.start / 1000)
 
-    That maps every transcribed word to real video time, which is what lets
-    the overlay stay aligned when the user pauses or rewinds.
+TODO: Switch to Celery if concurrency becomes an issue
 """
 
 import json
@@ -32,12 +27,13 @@ from pathlib import Path
 
 import requests
 
+from sign_clips import match_gloss
+from text_to_gloss import to_gloss
+
 DB_PATH = Path(__file__).resolve().parent / "captions.db"
 ASSEMBLYAI_KEY = os.environ.get("ASSEMBLYAI_API_KEY")
 AAI_BASE = "https://api.assemblyai.com/v2"
 
-# One shared connection guarded by a lock. SQLite is fine with this at our
-# scale and it sidesteps per-thread connection juggling.
 _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 _conn.row_factory = sqlite3.Row
 _lock = threading.Lock()
@@ -58,6 +54,8 @@ def init_db():
                 video_time_end    REAL NOT NULL DEFAULT 0,  -- live video time at chunk end (s)
                 text              TEXT,
                 words_json        TEXT,                   -- [{text, start, end} ...] ms from chunk start
+                gloss_json        TEXT,                   -- ASL gloss: ["TOKEN", ...]
+                clips_json        TEXT,                   -- sign clips: [{token, url} ...]
                 error             TEXT,
                 created_at        REAL NOT NULL,
                 PRIMARY KEY (session_id, chunk_index)
@@ -77,12 +75,17 @@ def init_db():
             )
             """
         )
-        # Migrate pre-existing DBs that lack video_time_end. Adding a column
-        # that already exists raises OperationalError, which we swallow.
-        try:
-            _conn.execute("ALTER TABLE captions ADD COLUMN video_time_end REAL NOT NULL DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
+        # Migrate pre-existing DBs that lack newer columns. Adding a column that
+        # already exists raises OperationalError, which we swallow.
+        for ddl in (
+            "ALTER TABLE captions ADD COLUMN video_time_end REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE captions ADD COLUMN gloss_json TEXT",   # ASL gloss token array
+            "ALTER TABLE captions ADD COLUMN clips_json TEXT",   # [{token, url} ...] sign clips
+        ):
+            try:
+                _conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
         _conn.commit()
 
 
@@ -96,8 +99,22 @@ def _row_to_dict(row):
         "video_time_end": row["video_time_end"],
         "text": row["text"],
         "words": json.loads(row["words_json"]) if row["words_json"] else [],
+        "gloss": json.loads(row["gloss_json"]) if row["gloss_json"] else [],
+        "clips": json.loads(row["clips_json"]) if row["clips_json"] else [],
         "error": row["error"],
     }
+
+
+def _gloss_and_clips(text):
+    """Translate a caption's English text to ASL gloss and match sign clips.
+    Returns (gloss_tokens, clips). Never raises — a failure yields ([], []) so
+    a caption still stores its English text and words."""
+    try:
+        gloss = to_gloss(text or "")
+        clips = match_gloss(gloss)
+        return gloss, clips
+    except Exception:  # noqa: BLE001 — gloss is additive; never break the caption
+        return [], []
 
 
 def insert_pending(video_id, session_id, chunk_index, video_time_offset, video_time_end=0):
@@ -113,31 +130,39 @@ def insert_pending(video_id, session_id, chunk_index, video_time_offset, video_t
         _conn.commit()
 
 
-def insert_ready(video_id, session_id, chunk_index, video_time_offset, video_time_end, text, words):
+def insert_ready(video_id, session_id, chunk_index, video_time_offset, video_time_end,
+                 text, words, gloss=None, clips=None):
     """Insert an already-transcribed segment directly as `ready`. Used by the
     whole-video prepare path, where AssemblyAI returns all words up front so
-    there is no pending stage."""
+    there is no pending stage. `gloss`/`clips` are the ASL translation + matched
+    sign clips (empty lists if not provided)."""
     with _lock:
         _conn.execute(
             """
             INSERT OR REPLACE INTO captions
                 (video_id, session_id, chunk_index, status, video_time_offset,
-                 video_time_end, text, words_json, created_at)
-            VALUES (?, ?, ?, 'ready', ?, ?, ?, ?, ?)
+                 video_time_end, text, words_json, gloss_json, clips_json, created_at)
+            VALUES (?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 video_id, session_id, chunk_index, video_time_offset,
-                video_time_end, text, json.dumps(words), time.time(),
+                video_time_end, text, json.dumps(words),
+                json.dumps(gloss or []), json.dumps(clips or []), time.time(),
             ),
         )
         _conn.commit()
 
 
 def _mark_ready(session_id, chunk_index, text, words):
+    # Live path: translate to ASL gloss + match sign clips as the row becomes
+    # ready, so the overlay gets gloss/clips alongside the English text.
+    gloss, clips = _gloss_and_clips(text)
     with _lock:
         _conn.execute(
-            "UPDATE captions SET status='ready', text=?, words_json=? WHERE session_id=? AND chunk_index=?",
-            (text, json.dumps(words), session_id, chunk_index),
+            "UPDATE captions SET status='ready', text=?, words_json=?, gloss_json=?, "
+            "clips_json=? WHERE session_id=? AND chunk_index=?",
+            (text, json.dumps(words), json.dumps(gloss), json.dumps(clips),
+             session_id, chunk_index),
         )
         _conn.commit()
 
@@ -205,9 +230,9 @@ def find_covering(video_id, session_id, start, end, min_overlap=0.9):
     return None
 
 
-# --- Whole-video prepare path ------------------------------------------
 # Transcribe an entire video once, up front, and store the result as ready
-# captions keyed by video_id (synthetic session `pre-<video_id>`). When a
+# captions keyed by video_id (synthetic session `pre-<video_id>`). 
+
 # prepared video is opened the extension skips live capture and renders these
 # straight from the /captions/video cache path.
 
@@ -275,17 +300,21 @@ def _prepare(video_id, audio_url):
             # path is testable with no API key and no network.
             for idx in range(3):
                 offset = idx * 10.0
+                text = f"the book is on the highway {idx}"
+                gloss, clips = _gloss_and_clips(text)
                 insert_ready(
                     video_id, session_id, idx, offset, offset + 10.0,
-                    f"[mock prepared caption {idx}]",
+                    text,
                     [{"text": "[mock]", "start": 0, "end": 500}],
+                    gloss, clips,
                 )
             _set_prepared(video_id, "ready")
             return
 
         words = _transcribe_words(audio_url)
         for idx, (offset, end, text, bucket) in enumerate(_segment_words(words)):
-            insert_ready(video_id, session_id, idx, offset, end, text, bucket)
+            gloss, clips = _gloss_and_clips(text)
+            insert_ready(video_id, session_id, idx, offset, end, text, bucket, gloss, clips)
         _set_prepared(video_id, "ready")
     except Exception as e:  # noqa: BLE001 — worker thread must never crash silently
         _set_prepared(video_id, "error", str(e))

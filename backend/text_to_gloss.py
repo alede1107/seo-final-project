@@ -9,6 +9,7 @@ Text to ASL constrants:
 
 
 """
+
 import json
 import os
 import re
@@ -154,7 +155,7 @@ def to_gloss(text: str) -> list:
     """
     Translate an English transcript span into an ASL Gloss token list.
     """
-    
+
     if not text or not text.strip():
         return []
 
