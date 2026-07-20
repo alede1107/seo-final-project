@@ -32,6 +32,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlencode
+from pathlib import Path
+import sys
+
+parent_dir = Path(__file__).resolve().parent.parent
+sys.path.append(str(parent_dir))
+
 from services.chunk_processor import process_chunk
 
 import requests
@@ -41,8 +47,6 @@ DB_PATH = Path(__file__).resolve().parent / "captions.db"
 ASSEMBLYAI_KEY = os.environ.get("ASSEMBLYAI_API_KEY")
 AAI_BASE = "https://api.assemblyai.com/v2"
 
-# One shared connection guarded by a lock. SQLite is fine with this at our
-# scale and it sidesteps per-thread connection juggling.
 _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 _conn.row_factory = sqlite3.Row
 _lock = threading.Lock()

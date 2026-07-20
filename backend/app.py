@@ -19,6 +19,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request
 
+
+
 load_dotenv(override=True)
 
 import pipeline
@@ -33,7 +35,6 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 pipeline.init_db()
 
 
-# --- CORS ---------------------------------------------------------------
 # Manual CORS. Do NOT reintroduce flask-cors: v4.x returns 403 for
 # chrome-extension:// origins with default settings. Lock the origin down to
 # the extension id before any public deployment.
