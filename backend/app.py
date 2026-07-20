@@ -21,14 +21,19 @@ from flask import Flask, jsonify, make_response, request
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 load_dotenv(override=True)
 
 import pipeline
 =======
 =======
 >>>>>>> parent of e8197fb (reduce live caption lag and refresh live sign rendering)
+=======
+>>>>>>> parent of e8197fb (reduce live caption lag and refresh live sign rendering)
 from . import pipeline
 >>>>>>> parent of e8197fb (reduce live caption lag and refresh live sign rendering)
+
+load_dotenv(override=True)
 
 load_dotenv(override=True)
 
