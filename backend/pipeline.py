@@ -61,6 +61,7 @@ def init_db():
                 words_json        TEXT,                   -- [{text, start, end} ...] ms from chunk start
                 error             TEXT,
                 created_at        REAL NOT NULL,
+                sign_match        TEXT,
                 PRIMARY KEY (session_id, chunk_index)
             )
             """
@@ -84,6 +85,11 @@ def init_db():
             _conn.execute("ALTER TABLE captions ADD COLUMN video_time_end REAL NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        # Add sign_match result in the same place the caption belongs to
+        try:
+            _conn.execute("ALTER TABLE captions ADD COLUMN sign_match TEXT")
+        except sqlite3.OperationalError:
+            pass
         _conn.commit()
 
 
@@ -98,6 +104,7 @@ def _row_to_dict(row):
         "text": row["text"],
         "words": json.loads(row["words_json"]) if row["words_json"] else [],
         "error": row["error"],
+        "sign_match": json.loads(row["sign_match"]) if row["sign_match"] else None
     }
 
 
@@ -114,7 +121,7 @@ def insert_pending(video_id, session_id, chunk_index, video_time_offset, video_t
         _conn.commit()
 
 
-def insert_ready(video_id, session_id, chunk_index, video_time_offset, video_time_end, text, words):
+def insert_ready(video_id, session_id, chunk_index, video_time_offset, video_time_end, text, words, sign_match=None):
     """Insert an already-transcribed segment directly as `ready`. Used by the
     whole-video prepare path, where AssemblyAI returns all words up front so
     there is no pending stage."""
@@ -123,22 +130,29 @@ def insert_ready(video_id, session_id, chunk_index, video_time_offset, video_tim
             """
             INSERT OR REPLACE INTO captions
                 (video_id, session_id, chunk_index, status, video_time_offset,
-                 video_time_end, text, words_json, created_at)
-            VALUES (?, ?, ?, 'ready', ?, ?, ?, ?, ?)
+                 video_time_end, text, words_json, sign_match, created_at)
+            VALUES (?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?)
             """,
             (
-                video_id, session_id, chunk_index, video_time_offset,
-                video_time_end, text, json.dumps(words), time.time(),
+                video_id,
+                session_id,
+                chunk_index,
+                video_time_offset,
+                video_time_end,
+                text,
+                json.dumps(words),
+                json.dumps(sign_match) if sign_match else None,
+                time.time(),
             ),
         )
         _conn.commit()
 
 
-def _mark_ready(session_id, chunk_index, text, words):
+def _mark_ready(session_id, chunk_index, text, words, sign_match):
     with _lock:
         _conn.execute(
-            "UPDATE captions SET status='ready', text=?, words_json=? WHERE session_id=? AND chunk_index=?",
-            (text, json.dumps(words), session_id, chunk_index),
+            "UPDATE captions SET status='ready', text=?, words_json=?, sign_match=? WHERE session_id=? AND chunk_index=?",
+            (text, json.dumps(words), json.dumps(sign_match), session_id, chunk_index),
         )
         _conn.commit()
 
@@ -280,13 +294,14 @@ def _prepare(video_id, audio_url):
                     video_id, session_id, idx, offset, offset + 10.0,
                     f"[mock prepared caption {idx}]",
                     [{"text": "[mock]", "start": 0, "end": 500}],
+                    None,
                 )
             _set_prepared(video_id, "ready")
             return
 
         words = _transcribe_words(audio_url)
         for idx, (offset, end, text, bucket) in enumerate(_segment_words(words)):
-            insert_ready(video_id, session_id, idx, offset, end, text, bucket)
+            insert_ready(video_id, session_id, idx, offset, end, text, bucket, None)
         _set_prepared(video_id, "ready")
     except Exception as e:  # noqa: BLE001 — worker thread must never crash silently
         _set_prepared(video_id, "error", str(e))
@@ -366,12 +381,13 @@ def _transcribe(audio_url, video_id, session_id, chunk_index):
                     "start": words[0]["start"] / 1000.0 if words else 0.0,
                     "end": words[-1]["end"] / 1000.0 if words else 0.0,
                 }
+
                 sign_match = process_chunk(chunk)
 
                 if sign_match:
                     print("SIGN_MATCH: ", sign_match)
                 
-                _mark_ready(session_id, chunk_index, payload.get("text", ""), words)
+                _mark_ready(session_id, chunk_index, payload.get("text", ""), words, sign_match)
                 return
             if status == "error":
                 _mark_error(session_id, chunk_index, payload.get("error", "AssemblyAI error"))

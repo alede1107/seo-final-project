@@ -19,13 +19,13 @@ from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request
 
-import pipeline
+from . import pipeline
 
-load_dotenv()
+load_dotenv(override=True)
 
 app = Flask(__name__)
 
-S3_BUCKET = os.environ.get("S3_BUCKET")
+S3_BUCKET = os.environ.get("S3_BUCKET", "").strip()
 s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
