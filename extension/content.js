@@ -1,29 +1,30 @@
-// content.js
-// Runs on the YouTube page. Two jobs:
+// Runs on the YouTube page. 
 //   1. Report the <video> element's currentTime when the service worker asks
 //      (used to align chunks to real video time).
 //   2. Render a Shadow-DOM caption overlay, polling the backend for this
 //      session's transcripts and (on start) any cached transcripts for the
 //      video from previous sessions.
-//
-// Guard against double-init: the manifest declares this script AND the
-// service worker may inject it programmatically into an already-open tab.
+
 if (!window.__captionAidLoaded) {
   window.__captionAidLoaded = true;
 
   const BACKEND = "http://localhost:5001";
-  const POLL_MS = 500;
+  const POLL_MS = 2000;
 
   let pollTimer = null;
   let sessionId = null;
   let videoId = null;
-  let overlayVisible = true;
-  let signQueue = [];
-  let signQueueIndex = 0;
-  let signQueueAutoplay = true;
-  let lastLiveSignKey = "";
   const seenChunks = new Set(); // chunk_index values already rendered
   let ui = null;
+
+  // Caption text mode: "asl" shows ASL gloss (default), "en" shows English.
+  // The sign-clip panel plays regardless of this — it's tied to the gloss, not
+  // the displayed text.
+  let mode = "asl";
+
+  // Segments in video-time order, each { offset, end, clips: [{token,url}] }.
+  // Drives the auto-playing sign-clip panel; populated alongside every line.
+  const segments = [];
 
   function getVideo() {
     return document.querySelector("video");
@@ -47,64 +48,84 @@ if (!window.__captionAidLoaded) {
     const root = host.attachShadow({ mode: "open" });
     root.innerHTML = `
       <style>
-        .box { width: 420px; max-height: 420px; background: rgba(15,15,18,0.92);
+        .box { width: 360px; background: rgba(15,15,18,0.92);
                color: #f2f2f2; border: 1px solid #333; border-radius: 10px;
                font: 13px/1.45 system-ui, sans-serif; box-shadow: 0 8px 28px rgba(0,0,0,.5);
                display: flex; flex-direction: column; overflow: hidden; }
         .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-               background: #1d1d22; cursor: move; user-select: none; }
+               background: #1d1d22; cursor: move; user-select: none; flex-shrink: 0; }
         .bar b { font-size: 12px; letter-spacing: .3px; }
-        .lag { margin-left: auto; font-size: 11px; color: #ffcb6b; }
-        .hideBtn { border: 0; background: #2a2a31; color: #d8d8df; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
-        .hideBtn:hover { background: #34343d; }
-        .signWrap { padding: 8px 10px 10px; border-bottom: 1px solid #2b2b33; background: rgba(25,25,30,0.95); }
-        .signHead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-        .signHead b { font-size: 12px; letter-spacing: .3px; }
-        .signBadge { margin-left: auto; font-size: 11px; color: #89d185; }
-        .signVideo { width: 100%; aspect-ratio: 16 / 9; background: #111; border: 1px solid #34343d;
-                     border-radius: 8px; object-fit: cover; display: none; }
-        .signEmpty { padding: 16px 10px; border: 1px dashed #3b3b44; border-radius: 8px; color: #9a9aa5; text-align: center; }
-        .list { padding: 6px 4px; overflow-y: auto; }
-        .line { padding: 5px 8px; border-radius: 6px; cursor: pointer; display: flex; gap: 8px; align-items: flex-start; }
+        .toggle { margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: .5px;
+                  background: #2b2b33; color: #cfe6ff; border: 1px solid #3a3a44;
+                  border-radius: 5px; padding: 2px 7px; cursor: pointer; }
+        .toggle:hover { background: #34343d; }
+        .lag { font-size: 11px; color: #ffcb6b; }
+        .clips { border-bottom: 1px solid #333; padding: 8px; display: none; flex-direction: column;
+                 align-items: center; gap: 4px; background: #141418; flex-shrink: 0; }
+        .clips.on { display: flex; }
+        .clipvid { width: 100%; height: 160px; object-fit: contain; border-radius: 6px; background: #000; }
+        .cliplabel { font-size: 11px; color: #9fd0ff; font-variant-numeric: tabular-nums; }
+        .list { padding: 6px 4px; overflow-y: auto; max-height: 180px; }
+        .line { padding: 5px 8px; border-radius: 6px; cursor: pointer; display: flex; gap: 8px;
+                border-left: 2px solid transparent; }
         .line:hover { background: #26262d; }
+        .line.current { background: rgba(255, 204, 0, 0.15); border-left-color: #ffcc00; }
         .t { color: #7fbfff; flex: 0 0 44px; font-variant-numeric: tabular-nums; }
         .cached .t { color: #8a8a8a; }
         .txt { flex: 1; }
-        .meta { margin-top: 3px; font-size: 11px; color: #9bd6ff; }
         .empty { padding: 10px; color: #999; }
       </style>
       <div class="box">
         <div class="bar" part="bar">
           <b>CaptionAid</b>
           <span class="lag" id="lag"></span>
-          <button class="hideBtn" id="hide-btn" type="button">Hide</button>
+          <button class="toggle" id="toggle" title="Toggle ASL gloss / English">ASL</button>
         </div>
-        <div class="signWrap">
-          <div class="signHead">
-            <b>Matched sign</b>
-            <span class="signBadge" id="sign-badge"></span>
-          </div>
-          <video id="sign-video" class="signVideo" muted playsinline></video>
-          <div id="sign-empty" class="signEmpty">No sign clip yet</div>
+        <div class="clips" id="clips">
+          <video class="clipvid" id="clipvid" muted playsinline></video>
+          <div class="cliplabel" id="cliplabel"></div>
         </div>
-        <div class="list" id="list"><div class="empty">Waiting for captions...</div></div>
+        <div class="list" id="list"><div class="empty">Waiting for captions…</div></div>
       </div>`;
 
     const listEl = root.getElementById("list");
     const lagEl = root.getElementById("lag");
-    const hideBtn = root.getElementById("hide-btn");
-    const signVideoEl = root.getElementById("sign-video");
-    const signEmptyEl = root.getElementById("sign-empty");
-    const signBadgeEl = root.getElementById("sign-badge");
+    const toggleEl = root.getElementById("toggle");
+    const clipsEl = root.getElementById("clips");
+    const clipVid = root.getElementById("clipvid");
+    const clipLabel = root.getElementById("cliplabel");
     makeDraggable(host, root.querySelector(".bar"));
-    signVideoEl.addEventListener("ended", advanceSignClip);
-    hideBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      setOverlayVisible(false);
-    });
 
-    ui = { host, root, listEl, lagEl, signVideoEl, signEmptyEl, signBadgeEl, hideBtn, empty: true };
+    ui = { host, root, listEl, lagEl, toggleEl, clipsEl, clipVid, clipLabel, empty: true };
+
+    // A click on the toggle must not start a drag on the bar.
+    toggleEl.addEventListener("mousedown", (e) => e.stopPropagation());
+    toggleEl.addEventListener("click", () => setMode(mode === "asl" ? "en" : "asl"));
+
+    // Advance the clip queue when the current clip finishes.
+    clipVid.addEventListener("ended", playNextClip);
+
     return ui;
+  }
+
+  // --- Caption text mode (ASL gloss vs English) --------------------------
+  function lineText(chunk) {
+    const gloss = Array.isArray(chunk.gloss) ? chunk.gloss.join(" ") : "";
+    // Fall back to English if a chunk has no gloss (e.g. all-stopword span).
+    return mode === "asl" && gloss ? gloss : (chunk.text || "");
+  }
+
+  function setMode(next) {
+    mode = next;
+    if (!ui) return;
+    ui.toggleEl.textContent = mode === "asl" ? "ASL" : "EN";
+    // Re-render every existing line from its stashed strings — no refetch.
+    for (const line of ui.listEl.querySelectorAll(".line")) {
+      const txt = line.querySelector(".txt");
+      const gloss = line.dataset.gloss || "";
+      const en = line.dataset.en || "";
+      txt.textContent = mode === "asl" && gloss ? gloss : en;
+    }
   }
 
   function makeDraggable(host, handle) {
@@ -125,100 +146,6 @@ if (!window.__captionAidLoaded) {
     window.addEventListener("mouseup", () => (dragging = false));
   }
 
-  function setOverlayVisible(visible) {
-    overlayVisible = visible;
-    const overlay = ensureOverlay();
-    overlay.host.style.display = visible ? "block" : "none";
-    if (overlay.launcher) {
-      overlay.launcher.style.display = visible ? "none" : "block";
-    }
-  }
-
-  function ensureLauncher() {
-    if (ui && ui.launcher) return ui.launcher;
-    const launcher = document.createElement("button");
-    launcher.type = "button";
-    launcher.id = "captionaid-launcher";
-    launcher.textContent = "CaptionAid";
-    launcher.style.cssText =
-      "position:fixed;right:24px;top:80px;z-index:2147483647;display:none;" +
-      "background:#1d1d22;color:#f2f2f2;border:1px solid #333;border-radius:999px;" +
-      "padding:8px 12px;font:12px/1.2 system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 28px rgba(0,0,0,.35);";
-    launcher.addEventListener("click", () => setOverlayVisible(true));
-    document.documentElement.appendChild(launcher);
-    if (ui) ui.launcher = launcher;
-    return launcher;
-  }
-
-  function clearSignClip() {
-    const { signVideoEl, signEmptyEl, signBadgeEl } = ensureOverlay();
-    signQueue = [];
-    signQueueIndex = 0;
-    signQueueAutoplay = true;
-    signVideoEl.pause();
-    signVideoEl.removeAttribute("src");
-    signVideoEl.load();
-    signVideoEl.style.display = "none";
-    signEmptyEl.style.display = "block";
-    signBadgeEl.textContent = "";
-  }
-
-  function liveSignKey(matches) {
-    return (Array.isArray(matches) ? matches : [])
-      .map((m) => `${m.word || ""}|${m.clip_url || ""}|${m.start ?? ""}|${m.end ?? ""}`)
-      .join("::");
-  }
-
-  async function updateSignClip(signMatches, autoplay = true) {
-    const matches = Array.isArray(signMatches) ? signMatches.filter(Boolean) : (signMatches ? [signMatches] : []);
-    const { signVideoEl, signEmptyEl, signBadgeEl } = ensureOverlay();
-    signQueue = matches;
-    signQueueIndex = 0;
-    signQueueAutoplay = autoplay;
-
-    if (!matches.length) {
-      clearSignClip();
-      return;
-    }
-
-    const current = signQueue[signQueueIndex];
-    const total = signQueue.length;
-    signBadgeEl.textContent = current.word ? `${signQueueIndex + 1}/${total} sign: ${current.word}` : `${signQueueIndex + 1}/${total}`;
-    signEmptyEl.style.display = "none";
-    signVideoEl.style.display = "block";
-    if (signVideoEl.src !== current.clip_url) {
-      signVideoEl.src = current.clip_url;
-    }
-    if (signQueueAutoplay) {
-      try {
-        await signVideoEl.play();
-      } catch (_) {
-        // Autoplay may be blocked; the clip is still visible and playable.
-      }
-    }
-  }
-
-  async function advanceSignClip() {
-    if (!signQueueAutoplay) return;
-    if (!signQueue.length) return;
-    signQueueIndex += 1;
-    if (signQueueIndex >= signQueue.length) {
-      clearSignClip();
-      return;
-    }
-    const current = signQueue[signQueueIndex];
-    const { signVideoEl, signBadgeEl, signEmptyEl } = ensureOverlay();
-    signBadgeEl.textContent = current.word ? `${signQueueIndex + 1}/${signQueue.length} sign: ${current.word}` : `${signQueueIndex + 1}/${signQueue.length}`;
-    signEmptyEl.style.display = "none";
-    signVideoEl.style.display = "block";
-    if (signVideoEl.src !== current.clip_url) {
-      signVideoEl.src = current.clip_url;
-    }
-    try {
-      await signVideoEl.play();
-    } catch (_) {}
-  }
-
   function addLine(chunk, cached) {
     const { listEl } = ensureOverlay();
     if (ui.empty) {
@@ -228,37 +155,26 @@ if (!window.__captionAidLoaded) {
     const line = document.createElement("div");
     line.className = "line" + (cached ? " cached" : "");
     line.dataset.time = String(chunk.video_time_offset || 0);
+    // Stash both strings so the toggle can swap text with no refetch.
+    line.dataset.en = chunk.text || "";
+    line.dataset.gloss = Array.isArray(chunk.gloss) ? chunk.gloss.join(" ") : "";
 
     const t = document.createElement("span");
     t.className = "t";
     t.textContent = fmtTime(chunk.video_time_offset);
     const txt = document.createElement("span");
     txt.className = "txt";
-    txt.textContent = chunk.text || "";
-
-    const signMatches = chunk.sign_matches && chunk.sign_matches.length
-      ? chunk.sign_matches
-      : (chunk.sign_match ? [chunk.sign_match] : []);
-
-    if (signMatches.length && signMatches[0].word) {
-      const meta = document.createElement("span");
-      meta.className = "meta";
-      meta.textContent = signMatches.length > 1
-        ? `sign: ${signMatches[0].word} +${signMatches.length - 1} more`
-        : `sign: ${signMatches[0].word}`;
-      txt.appendChild(meta);
-    }
+    txt.textContent = lineText(chunk);
 
     line.append(t, txt);
-    // Click a caption to seek the video to it - the alignment payoff.
+
+    // Register the segment so the sign-clip panel can follow playback.
+    registerSegment(chunk);
+    // Click a caption to seek the video to it — the alignment payoff.
     line.addEventListener("click", () => {
       const v = getVideo();
       if (v) v.currentTime = Number(line.dataset.time) || 0;
     });
-
-    if (signMatches.length) {
-      updateSignClip(signMatches, !cached);
-    }
 
     // Keep the list ordered by video time.
     const rows = [...listEl.children];
@@ -280,6 +196,98 @@ if (!window.__captionAidLoaded) {
     ui.lagEl.textContent = lag > 0 ? `~${Math.round(lag)}s behind` : "live";
   }
 
+  // --- Sign-clip panel (auto-plays the active segment's clips) ------------
+  let clipTimer = null;
+  let activeSeg = null; // the segment whose clips are currently queued
+  let clipIdx = 0;
+
+  function registerSegment(chunk) {
+    const clips = Array.isArray(chunk.clips) ? chunk.clips : [];
+    const offset = Number(chunk.video_time_offset) || 0;
+    // Keep segments sorted by offset; dedup by offset so cache+live don't double.
+    if (segments.some((s) => s.offset === offset)) return;
+    const end = Number(chunk.video_time_end) || offset + 10;
+    const seg = { offset, end, clips };
+    const at = segments.findIndex((s) => s.offset > offset);
+    if (at === -1) segments.push(seg);
+    else segments.splice(at, 0, seg);
+  }
+
+  // The segment to sign for the current video time: the one containing it, else
+  // the most recent one at/just before it (covers the live trailing-lag case).
+  function activeSegmentFor(t) {
+    let candidate = null;
+    for (const s of segments) {
+      if (t >= s.offset && t < s.end) return s;
+      if (s.offset <= t) candidate = s;
+      else break;
+    }
+    return candidate;
+  }
+
+  function playSegment(seg) {
+    activeSeg = seg;
+    clipIdx = 0;
+    playNextClip();
+  }
+
+  function playNextClip() {
+    if (!ui || !activeSeg) return;
+    const clips = activeSeg.clips || [];
+    if (clipIdx >= clips.length) {
+      // Queue exhausted — hold until the active segment changes.
+      ui.clipLabel.textContent = clips.length ? "" : "—";
+      return;
+    }
+    const clip = clips[clipIdx];
+    clipIdx += 1;
+    const vid = ui.clipVid;
+    ui.clipLabel.textContent = `${clip.token} (${clipIdx}/${clips.length})`;
+
+    vid.onloadedmetadata = () => {
+      vid.onloadedmetadata = null;
+      if (clip.target_duration > 0 && vid.duration > 0) {
+        vid.playbackRate = Math.min(Math.max(vid.duration / clip.target_duration, 0.25), 4.0);
+      } else {
+        vid.playbackRate = 1.0;
+      }
+      vid.play().catch(() => {});
+    };
+    vid.src = clip.url;
+  }
+
+  function updateCurrentLine(t) {
+    if (!ui) return;
+    const seg = activeSegmentFor(t);
+    let currentLine = null;
+    for (const line of ui.listEl.querySelectorAll(".line")) {
+      const active = seg !== null && Number(line.dataset.time) === seg.offset;
+      line.classList.toggle("current", active);
+      if (active) currentLine = line;
+    }
+    if (currentLine) currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  function driveClips() {
+    if (!ui) return;
+    const v = getVideo();
+    ui.clipsEl.classList.toggle("on", segments.length > 0);
+    if (!v) return;
+    const t = v.currentTime;
+    updateCurrentLine(t);
+    // Mirror the page video's play/pause state.
+    if (v.paused) {
+      if (!ui.clipVid.paused) ui.clipVid.pause();
+      return;
+    }
+    const seg = activeSegmentFor(t);
+    if (seg && seg !== activeSeg) {
+      playSegment(seg); // segment changed — restart its clip queue
+    } else if (ui.clipVid.paused && ui.clipVid.src) {
+      ui.clipVid.play().catch(() => {}); // resume after the page video un-paused
+    }
+  }
+
   // --- Polling -----------------------------------------------------------
   async function pollOnce() {
     if (!sessionId) return;
@@ -293,20 +301,6 @@ if (!window.__captionAidLoaded) {
           addLine(c, false);
         }
       }
-
-      const liveRes = await fetch(`${BACKEND}/stream/${encodeURIComponent(sessionId)}`);
-      if (liveRes.ok) {
-        const live = await liveRes.json();
-        const liveMatches = live.latest_sign_matches || (live.latest_sign_match ? [live.latest_sign_match] : []);
-        if (liveMatches.length) {
-          const key = liveSignKey(liveMatches);
-          if (key && key !== lastLiveSignKey) {
-            lastLiveSignKey = key;
-            await updateSignClip(liveMatches, true);
-          }
-        }
-      }
-
       updateLag();
     } catch (_) {
       // backend down; keep trying.
@@ -332,21 +326,26 @@ if (!window.__captionAidLoaded) {
   function start(vid, sid) {
     videoId = vid;
     sessionId = sid;
-    lastLiveSignKey = "";
     seenChunks.clear();
+    segments.length = 0;
+    activeSeg = null;
+    clipIdx = 0;
     ensureOverlay();
-    ensureLauncher();
-    setOverlayVisible(true);
-    clearSignClip();
     loadCache(); // instant history from prior sessions (cache-hit path)
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(pollOnce, POLL_MS);
     pollOnce();
+    // Follow playback closely enough to switch clips on time (finer than POLL_MS).
+    if (clipTimer) clearInterval(clipTimer);
+    clipTimer = setInterval(driveClips, 400);
   }
 
   function stop() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
+    if (clipTimer) clearInterval(clipTimer);
+    clipTimer = null;
+    if (ui && !ui.clipVid.paused) ui.clipVid.pause();
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

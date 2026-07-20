@@ -13,19 +13,19 @@ import os
 import re
 import shutil
 import tempfile
-
+import yt_dlp
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request
 
-load_dotenv(override=True)
-
 import pipeline
+
+load_dotenv()
 
 app = Flask(__name__)
 
-S3_BUCKET = os.environ.get("S3_BUCKET", "").strip()
+S3_BUCKET = os.environ.get("S3_BUCKET")
 s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
@@ -33,10 +33,7 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 pipeline.init_db()
 
 
-# --- CORS ---------------------------------------------------------------
-# Manual CORS. Do NOT reintroduce flask-cors: v4.x returns 403 for
-# chrome-extension:// origins with default settings. Lock the origin down to
-# the extension id before any public deployment.
+# TODO : Lock the origin down to the extension id before any public deployment.
 @app.after_request
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -49,8 +46,6 @@ def add_cors(response):
 @app.route("/prepare", methods=["OPTIONS"])
 @app.route("/prepare/<path:_any>", methods=["OPTIONS"])
 @app.route("/captions/<path:_any>", methods=["OPTIONS"])
-@app.route("/stream", methods=["OPTIONS"])
-@app.route("/stream/<path:_any>", methods=["OPTIONS"])
 def preflight(_any=None):
     return make_response("", 204)
 
@@ -132,69 +127,12 @@ def upload():
 
     return jsonify({"ok": True, "key": key}), 201
 
-
-@app.route("/stream/start", methods=["POST"])
-def stream_start():
-    body = request.get_json(silent=True) or {}
-    try:
-        video_id = _validate(body.get("video_id", ""), "video_id")
-        session_id = _validate(body.get("session_id", ""), "session_id")
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-
-    status = pipeline.start_live_session(video_id, session_id)
-    return jsonify(status), 201
-
-
-@app.route("/stream/<session_id>/chunk", methods=["POST"])
-def stream_chunk(session_id):
-    try:
-        session_id = _validate(session_id, "session_id")
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-
-    audio = request.get_data(cache=False)
-    if not audio:
-        return jsonify({"error": "missing audio data"}), 400
-
-    video_time_offset = float(request.args.get("video_time_offset", "0") or 0)
-    video_time_end = float(request.args.get("video_time_end", "0") or 0)
-
-    try:
-        pipeline.push_live_audio(session_id, audio, video_time_offset, video_time_end)
-    except KeyError:
-        return jsonify({"error": "unknown live session"}), 404
-
-    return jsonify({"ok": True}), 202
-
-
-@app.route("/stream/<session_id>/stop", methods=["POST"])
-def stream_stop(session_id):
-    try:
-        session_id = _validate(session_id, "session_id")
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-
-    return jsonify(pipeline.stop_live_session(session_id)), 200
-
-
-@app.route("/stream/<session_id>", methods=["GET"])
-def stream_status(session_id):
-    try:
-        session_id = _validate(session_id, "session_id")
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-
-    return jsonify(pipeline.get_live_session(session_id))
-
-
-# --- Whole-video prepare path ------------------------------------------
 def _download_audio(video_id):
     """Download bestaudio for a YouTube video_id to a temp file via yt-dlp.
     Returns (path, ext, tmpdir). The caller must delete tmpdir when done (the
     local file is only needed until the S3 put; AssemblyAI pulls from S3 after).
     Raises on failure (caller maps to 502)."""
-    import yt_dlp
+    
 
     tmpdir = tempfile.mkdtemp(prefix="captionaid-")
     outtmpl = os.path.join(tmpdir, "%(id)s.%(ext)s")
@@ -256,8 +194,8 @@ def prepare():
     except Exception as e:  # noqa: BLE001 — yt-dlp/ffmpeg failures
         app.logger.error("audio download failed: %s", e)
         return jsonify({"error": "audio download failed"}), 502
+    
     finally:
-        # The bytes now live in S3; the local temp dir is no longer needed.
         if tmpdir is not None:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -269,8 +207,7 @@ def prepare():
 def prepare_status(video_id):
     return jsonify(pipeline.get_prepared(video_id))
 
-
-# --- Caption read endpoints --------------------------------------------
+# CAPTION READ 
 @app.route("/captions/<session_id>/<int:chunk_index>", methods=["GET"])
 def caption_chunk(session_id, chunk_index):
     chunk = pipeline.get_chunk(session_id, chunk_index)
@@ -292,5 +229,4 @@ def caption_video(video_id):
 
 
 if __name__ == "__main__":
-    # threaded=True so caption polling isn't blocked while a chunk uploads.
     app.run(host="127.0.0.1", port=5001, debug=True, threaded=True)
