@@ -21,7 +21,7 @@ from flask import Flask, jsonify, make_response, request
 
 load_dotenv(override=True)
 
-from . import pipeline
+import pipeline
 
 app = Flask(__name__)
 
