@@ -29,6 +29,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from services.chunk_processor import process_chunk
 
 import requests
 
@@ -358,6 +359,18 @@ def _transcribe(audio_url, video_id, session_id, chunk_index):
                     {"text": w["text"], "start": w["start"], "end": w["end"]}
                     for w in (payload.get("words") or [])
                 ]
+                chunk = {
+                    "speaker": None,
+                    "text": payload.get("text", ""),
+                    "is_final": True,
+                    "start": words[0]["start"] / 1000.0 if words else 0.0,
+                    "end": words[-1]["end"] / 1000.0 if words else 0.0,
+                }
+                sign_match = process_chunk(chunk)
+
+                if sign_match:
+                    print("SIGN_MATCH: ", sign_match)
+                
                 _mark_ready(session_id, chunk_index, payload.get("text", ""), words)
                 return
             if status == "error":
