@@ -23,6 +23,19 @@ from flask import Flask, jsonify, make_response, request, send_from_directory
 
 load_dotenv()
 
+for env_key in (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_REGION",
+    "S3_BUCKET",
+    "ASSEMBLYAI_API_KEY",
+    "HF_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+):
+    if env_key in os.environ:
+        os.environ[env_key] = os.environ[env_key].strip()
+
 if __package__:
     from . import pipeline
 else:  # Supports `python backend/app.py` in addition to `python -m backend.app`.
