@@ -9,18 +9,50 @@ interface SignSequencePlayerProps {
   clips: SignClip[];
   title?: string;
   emptyMessage?: string;
+  sync?: {
+    currentTime: number;
+    playing: boolean;
+    playbackRate: number;
+    segmentDuration: number;
+  };
+}
+
+function clipPosition(clips: SignClip[], elapsed: number, segmentDuration: number) {
+  if (!clips.length) return null;
+  const fallbackDuration = Math.max(0.1, segmentDuration) / clips.length;
+  let cursor = 0;
+
+  for (let index = 0; index < clips.length; index += 1) {
+    const parsedDuration = Number(clips[index].target_duration);
+    const targetDuration = parsedDuration > 0 ? parsedDuration : fallbackDuration;
+    const next = cursor + targetDuration;
+    if (elapsed < next || index === clips.length - 1) {
+      return {
+        index,
+        targetDuration,
+        elapsed: Math.max(0, Math.min(elapsed - cursor, targetDuration)),
+      };
+    }
+    cursor = next;
+  }
+
+  return null;
 }
 
 export default function SignSequencePlayer({
   clips,
   title = "Sign sequence",
   emptyMessage = "Select a caption to preview its matched sign clips.",
+  sync,
 }: SignSequencePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [index, setIndex] = useState(0);
   const [speedMode, setSpeedMode] = useState<SpeedMode>("fit");
   const [playing, setPlaying] = useState(false);
   const clipKey = clips.map((item) => item.url).join("|");
+  const syncedPosition = sync
+    ? clipPosition(clips, sync.currentTime, sync.segmentDuration)
+    : null;
   const clip = clips[index];
 
   useEffect(() => {
@@ -28,27 +60,55 @@ export default function SignSequencePlayer({
     setPlaying(false);
   }, [clipKey]);
 
+  useEffect(() => {
+    if (syncedPosition) setIndex(syncedPosition.index);
+  }, [syncedPosition?.index]);
+
   const applySpeed = () => {
     const video = videoRef.current;
     if (!video || !Number.isFinite(video.duration)) return;
     const requestedSpeed =
       speedMode === "fit"
         ? clip?.target_duration
-          ? video.duration / clip.target_duration
+          ? (video.duration / clip.target_duration) * (sync?.playbackRate || 1)
           : 1
         : Number(speedMode);
-    video.playbackRate = Math.max(0.5, Math.min(requestedSpeed, 4));
+    video.playbackRate = Math.max(0.25, Math.min(requestedSpeed, 16));
   };
 
   useEffect(() => {
     applySpeed();
-  }, [speedMode, clip]);
+  }, [speedMode, clip, sync?.playbackRate]);
+
+  const alignToYouTube = (force = false) => {
+    const video = videoRef.current;
+    if (!video || !syncedPosition || syncedPosition.index !== index) return;
+    if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+
+    const desiredTime = Math.min(
+      video.duration - 0.01,
+      (syncedPosition.elapsed / syncedPosition.targetDuration) * video.duration,
+    );
+    if (force || Math.abs(video.currentTime - desiredTime) > 0.3) {
+      video.currentTime = Math.max(0, desiredTime);
+    }
+  };
+
+  useEffect(() => {
+    alignToYouTube();
+  }, [sync?.currentTime, syncedPosition?.index, index]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !playing) return;
-    void video.play().catch(() => setPlaying(false));
-  }, [index, playing]);
+    if (!video) return;
+    if (sync?.playing || playing) {
+      void video.play().catch(() => {
+        if (!sync?.playing) setPlaying(false);
+      });
+    } else {
+      video.pause();
+    }
+  }, [index, playing, sync?.playing]);
 
   const moveTo = (nextIndex: number) => {
     setIndex(Math.max(0, Math.min(nextIndex, clips.length - 1)));
@@ -86,11 +146,20 @@ export default function SignSequencePlayer({
           className="size-full object-contain"
           preload="metadata"
           playsInline
+          muted
           controls
-          onLoadedMetadata={applySpeed}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
+          onLoadedMetadata={() => {
+            applySpeed();
+            alignToYouTube(true);
+          }}
+          onPlay={() => {
+            if (!sync?.playing) setPlaying(true);
+          }}
+          onPause={() => {
+            if (!sync?.playing) setPlaying(false);
+          }}
           onEnded={() => {
+            if (sync?.playing) return;
             if (index < clips.length - 1) {
               setIndex((current) => current + 1);
             } else {

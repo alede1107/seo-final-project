@@ -19,14 +19,17 @@ that follows the YouTube playhead.
 The prepared-caption path does not require FFmpeg. It uploads the audio format
 provided by YouTube directly to S3.
 
-## Install
+## One-Time Setup
 
-Create one virtual environment at the repository root and install the pinned
-dependencies:
+Pick one environment (WSL, macOS, or Windows) and use it for both Python and
+Node. Do not reuse `venv` or `frontend/node_modules` between WSL and Windows;
+their native packages are different.
+
+Create one virtual environment at the repository root and install the backend:
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
@@ -34,10 +37,18 @@ python -m pip install -r requirements.txt
 On Windows PowerShell, activate with:
 
 ```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+```
+
+Install the companion website from that same environment:
+
+```bash
+cd frontend
+npm ci --include=optional
+cd ..
 ```
 
 Confirm the JavaScript runtime is visible. One of these must succeed:
@@ -64,14 +75,17 @@ GEMINI_API_KEY=...
 
 Do not commit `.env`.
 
-## Run
+## Run Every Day
 
-From the repository root:
+Start the backend from the repository root:
 
 ```bash
-source venv/bin/activate
-python -m backend.app
+source .venv/bin/activate
+python3 app.py
 ```
+
+On Windows PowerShell, activate with `.\.venv\Scripts\Activate.ps1` and run
+`python app.py` instead.
 
 The backend runs at `http://127.0.0.1:5001`. Verify it in another terminal:
 
@@ -85,11 +99,10 @@ The response should be `{"ok":true}`.
 
 The React companion website is separate from the browser extension, but both
 use the same Flask API and caption database. Keep the backend running, then use
-a second terminal:
+a second terminal in the same environment:
 
 ```bash
 cd frontend
-npm install
 npm run dev
 ```
 
@@ -114,10 +127,10 @@ Flask. Flask serves the built site and API from the same port:
 
 ```bash
 cd frontend
-npm install
+npm ci --include=optional
 npm run build
 cd ..
-python -m backend.app
+python3 app.py
 ```
 
 Then open `http://127.0.0.1:5001`.

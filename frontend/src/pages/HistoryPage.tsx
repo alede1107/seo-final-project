@@ -8,6 +8,7 @@ import CaptionTimeline from "../components/CaptionTimeline";
 import DeletePreparedDialog from "../components/DeletePreparedDialog";
 import PrepareDialog from "../components/PrepareDialog";
 import SignSequencePlayer from "../components/SignSequencePlayer";
+import YouTubePlayer, { type YouTubePlaybackState } from "../components/YouTubePlayer";
 import type { CaptionChunk, SessionSummary } from "../types";
 import { formatClock, formatDate } from "../utils";
 
@@ -28,6 +29,12 @@ export default function HistoryPage() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [videoPlayback, setVideoPlayback] = useState<YouTubePlaybackState>({
+    currentTime: 0,
+    playing: false,
+    playbackRate: 1,
+    ready: false,
+  });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -61,6 +68,12 @@ export default function HistoryPage() {
     setActiveChunkIndex(0);
     setTranscriptSearch("");
     setMatchedOnly(false);
+    setVideoPlayback({
+      currentTime: 0,
+      playing: false,
+      playbackRate: 1,
+      ready: false,
+    });
 
     if (!selected || selected.status !== "ready") {
       setChunks([]);
@@ -111,6 +124,18 @@ export default function HistoryPage() {
   useEffect(() => {
     setActiveChunkIndex(0);
   }, [matchedOnly, transcriptSearch]);
+
+  useEffect(() => {
+    if (!videoPlayback.ready) return;
+    const nextIndex = filteredChunks.findIndex(
+      (chunk) =>
+        videoPlayback.currentTime >= chunk.video_time_offset &&
+        videoPlayback.currentTime < chunk.video_time_end,
+    );
+    if (nextIndex >= 0) {
+      setActiveChunkIndex((current) => (current === nextIndex ? current : nextIndex));
+    }
+  }, [filteredChunks, videoPlayback.currentTime, videoPlayback.ready]);
 
   const selectedChunk = filteredChunks[activeChunkIndex] || null;
   const readyCount = sessions.filter((session) => session.status === "ready").length;
@@ -318,12 +343,10 @@ export default function HistoryPage() {
 
                 <div className="border-b border-white/10 bg-black">
                   <div className="mx-auto aspect-video max-h-[380px]">
-                    <iframe
-                      className="size-full"
-                      src={`https://www.youtube-nocookie.com/embed/${selected.video_id}`}
+                    <YouTubePlayer
+                      videoId={selected.video_id}
                       title={selected.title}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
+                      onPlaybackChange={setVideoPlayback}
                     />
                   </div>
                 </div>
@@ -415,6 +438,21 @@ export default function HistoryPage() {
             <SignSequencePlayer
               clips={selectedChunk?.clips || []}
               emptyMessage="This caption has no word in the current sign vocabulary."
+              sync={
+                selectedChunk && videoPlayback.ready
+                  ? {
+                      currentTime:
+                        videoPlayback.currentTime - selectedChunk.video_time_offset,
+                      playing:
+                        videoPlayback.playing &&
+                        videoPlayback.currentTime >= selectedChunk.video_time_offset &&
+                        videoPlayback.currentTime < selectedChunk.video_time_end,
+                      playbackRate: videoPlayback.playbackRate,
+                      segmentDuration:
+                        selectedChunk.video_time_end - selectedChunk.video_time_offset,
+                    }
+                  : undefined
+              }
             />
             {selectedChunk && (
               <div className="mt-3 border border-white/10 bg-neutral-950/50 px-3 py-2.5">

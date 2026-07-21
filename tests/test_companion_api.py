@@ -13,6 +13,7 @@ class CompanionApiTests(unittest.TestCase):
         response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"ok": True})
+        self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
 
     def test_signs_are_real_map_entries_with_search_and_pagination(self):
         word_map = {

@@ -21,7 +21,11 @@ from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request, send_from_directory
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# The repository-level .env is the single source of truth for local runs. Using
+# an explicit path makes startup independent of the terminal's current folder.
+load_dotenv(PROJECT_ROOT / ".env", override=True)
 
 for env_key in (
     "AWS_ACCESS_KEY_ID",
@@ -47,16 +51,17 @@ app = Flask(__name__, static_folder=None)
 
 S3_BUCKET = os.environ.get("S3_BUCKET", "").strip()
 s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
-FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
 pipeline.init_db()
 
 
-# TODO : Lock the origin down to the extension id before any public deployment.
 @app.after_request
 def add_cors(response):
+    # Local development must support unpacked Chrome and Edge extensions,
+    # whose generated IDs differ on every teammate's machine.
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
@@ -223,9 +228,6 @@ def prepare():
     """Kick off whole-video transcription so captions are ready before playback.
     Downloads the audio (yt-dlp), stores the source in S3, and hands a pre-signed
     URL to the pipeline. Idempotent: a ready video returns immediately."""
-    if not S3_BUCKET:
-        return jsonify({"error": "server misconfigured: S3_BUCKET not set"}), 500
-
     body = request.get_json(silent=True) or {}
     try:
         video_id = _validate(body.get("video_id", ""), "video_id")
@@ -243,6 +245,9 @@ def prepare():
     if not pipeline.ASSEMBLYAI_KEY:
         pipeline.prepare_async(video_id, None)
         return jsonify({"status": "preparing"}), 202
+
+    if not S3_BUCKET:
+        return jsonify({"error": "server misconfigured: S3_BUCKET not set"}), 500
 
     # Persist this before downloading so a closed/reopened extension popup can
     # still see that preparation is active and will not launch a duplicate job.
@@ -437,5 +442,10 @@ def companion_frontend(path):
     return send_from_directory(FRONTEND_DIST, "index.html")
 
 
-if __name__ == "__main__":
+def run():
+    """Run the local development server from either supported entrypoint."""
     app.run(host="127.0.0.1", port=5001, debug=True, threaded=True)
+
+
+if __name__ == "__main__":
+    run()

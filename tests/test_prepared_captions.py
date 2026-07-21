@@ -124,6 +124,25 @@ class PreparedCaptionTests(unittest.TestCase):
         prepare_async.assert_called_once_with("testvideo", "https://example.test/audio")
         self.assertFalse(os.path.exists(temp_dir))
 
+    def test_prepare_mock_mode_does_not_require_s3(self):
+        with (
+            patch.object(app_module, "S3_BUCKET", ""),
+            patch.object(app_module.pipeline, "ASSEMBLYAI_KEY", None),
+            patch.object(
+                app_module.pipeline,
+                "get_prepared",
+                return_value={"status": "none", "error": None},
+            ),
+            patch.object(app_module.pipeline, "prepare_async") as prepare_async,
+        ):
+            response = app_module.app.test_client().post(
+                "/prepare", json={"video_id": "testvideo"}
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.get_json(), {"status": "preparing"})
+        prepare_async.assert_called_once_with("testvideo", None)
+
     def test_prepare_returns_actionable_download_error(self):
         with (
             patch.object(app_module, "S3_BUCKET", "test-bucket"),
