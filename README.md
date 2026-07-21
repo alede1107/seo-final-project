@@ -103,6 +103,9 @@ The website stays focused on two real workflows:
 - `/signs` searches and plays entries from the complete `word_to_url.json`
   vocabulary.
 
+Deleting a History item removes its prepared transcript and matched clips from
+the local database. It does not delete live-capture sessions or S3 audio.
+
 The browser extension remains the third user-facing surface and uses the same
 backend and caption records.
 

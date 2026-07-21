@@ -311,6 +311,28 @@ def sessions():
     return jsonify({"items": items, "count": len(items)})
 
 
+@app.route("/api/sessions/<video_id>", methods=["DELETE"])
+def delete_session(video_id):
+    try:
+        safe_video_id = _validate(video_id, "video_id")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    result = pipeline.delete_prepared(safe_video_id)
+    if result.get("reason") == "not_found":
+        return jsonify({"error": "prepared video not found"}), 404
+    if result.get("reason") == "preparing":
+        return jsonify({"error": "video is still preparing"}), 409
+
+    return jsonify(
+        {
+            "ok": True,
+            "video_id": safe_video_id,
+            "captions_deleted": result["captions_deleted"],
+        }
+    )
+
+
 @app.route("/api", methods=["GET"])
 def api_index():
     return jsonify(

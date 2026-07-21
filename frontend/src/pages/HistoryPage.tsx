@@ -5,6 +5,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { getSessions, getVideoCaptions } from "../api";
 import CaptionTimeline from "../components/CaptionTimeline";
+import DeletePreparedDialog from "../components/DeletePreparedDialog";
 import PrepareDialog from "../components/PrepareDialog";
 import SignSequencePlayer from "../components/SignSequencePlayer";
 import type { CaptionChunk, SessionSummary } from "../types";
@@ -135,6 +136,13 @@ export default function HistoryPage() {
 
   const prepared = (videoId: string) => {
     setSearchParams({ video: videoId });
+    setRefreshKey((current) => current + 1);
+  };
+
+  const deleted = (videoId: string) => {
+    setSessions((current) => current.filter((session) => session.video_id !== videoId));
+    setChunks([]);
+    setSearchParams({});
     setRefreshKey((current) => current + 1);
   };
 
@@ -269,6 +277,15 @@ export default function HistoryPage() {
                   <p className="mt-2 text-sm leading-6 text-neutral-600">
                     {selected.error || "Caption preparation is still running. Refresh shortly to see the result."}
                   </p>
+                  {selected.status === "error" && (
+                    <div className="mt-5 flex justify-center">
+                      <DeletePreparedDialog
+                        videoId={selected.video_id}
+                        title={selected.title}
+                        onDeleted={deleted}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -282,14 +299,21 @@ export default function HistoryPage() {
                       <span>{selected.chunk_count} captions</span>
                     </div>
                   </div>
-                  <a
-                    className="focus-ring shrink-0 rounded-md border border-white/10 px-3 py-2 text-xs font-bold text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
-                    href={`https://www.youtube.com/watch?v=${selected.video_id}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Open YouTube
-                  </a>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <DeletePreparedDialog
+                      videoId={selected.video_id}
+                      title={selected.title}
+                      onDeleted={deleted}
+                    />
+                    <a
+                      className="focus-ring rounded-md border border-white/10 px-3 py-2 text-xs font-bold text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
+                      href={`https://www.youtube.com/watch?v=${selected.video_id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open YouTube
+                    </a>
+                  </div>
                 </div>
 
                 <div className="border-b border-white/10 bg-black">

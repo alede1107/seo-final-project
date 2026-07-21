@@ -64,6 +64,14 @@ export async function getSessions(signal?: AbortSignal): Promise<SessionSummary[
   return payload.items;
 }
 
+export function deletePreparedVideo(
+  videoId: string,
+): Promise<{ ok: boolean; video_id: string; captions_deleted: number }> {
+  return requestJson(`/api/sessions/${encodeURIComponent(videoId)}`, {
+    method: "DELETE",
+  });
+}
+
 export function getSigns(
   query: string,
   letter: string,

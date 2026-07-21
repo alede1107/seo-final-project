@@ -17,6 +17,7 @@ Time alignment:
 TODO: Switch to Celery if concurrency becomes an issue
 """
 
+import atexit
 import json
 import os
 import sys
@@ -45,6 +46,16 @@ _conn.row_factory = sqlite3.Row
 _lock = threading.Lock()
 
 _executor = ThreadPoolExecutor(max_workers=4)
+
+
+def _close_db():
+    try:
+        _conn.close()
+    except sqlite3.Error:
+        pass
+
+
+atexit.register(_close_db)
 
 
 def init_db():
@@ -367,6 +378,28 @@ def list_prepared(limit=50):
                 }
             )
     return results
+
+
+def delete_prepared(video_id):
+    """Delete one whole-video preparation without touching live sessions or S3."""
+    session_id = f"pre-{video_id}"
+    with _lock:
+        job = _conn.execute(
+            "SELECT status FROM prepared WHERE video_id=?", (video_id,)
+        ).fetchone()
+        if job is None:
+            return {"deleted": False, "reason": "not_found"}
+        if job["status"] == "preparing":
+            return {"deleted": False, "reason": "preparing"}
+
+        cursor = _conn.execute(
+            "DELETE FROM captions WHERE video_id=? AND session_id=?",
+            (video_id, session_id),
+        )
+        _conn.execute("DELETE FROM prepared WHERE video_id=?", (video_id,))
+        _conn.commit()
+
+    return {"deleted": True, "captions_deleted": cursor.rowcount}
 
 
 def mark_prepare_started(video_id):

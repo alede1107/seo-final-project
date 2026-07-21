@@ -1,3 +1,4 @@
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -48,6 +49,71 @@ class CompanionApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"items": rows, "count": 1})
         list_prepared.assert_called_once_with(limit=12)
+
+    def test_delete_session_removes_prepared_captions(self):
+        result = {"deleted": True, "captions_deleted": 4}
+        with patch.object(
+            app_module.pipeline, "delete_prepared", return_value=result
+        ) as delete_prepared:
+            response = self.client.delete("/api/sessions/abc123")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json(),
+            {"ok": True, "video_id": "abc123", "captions_deleted": 4},
+        )
+        delete_prepared.assert_called_once_with("abc123")
+
+    def test_delete_session_rejects_active_or_missing_jobs(self):
+        with patch.object(
+            app_module.pipeline,
+            "delete_prepared",
+            return_value={"deleted": False, "reason": "preparing"},
+        ):
+            preparing = self.client.delete("/api/sessions/abc123")
+        self.assertEqual(preparing.status_code, 409)
+
+        with patch.object(
+            app_module.pipeline,
+            "delete_prepared",
+            return_value={"deleted": False, "reason": "not_found"},
+        ):
+            missing = self.client.delete("/api/sessions/abc123")
+        self.assertEqual(missing.status_code, 404)
+
+    def test_delete_prepared_preserves_live_captions(self):
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.row_factory = sqlite3.Row
+            with patch.object(app_module.pipeline, "_conn", connection):
+                app_module.pipeline.init_db()
+                app_module.pipeline.mark_prepare_error("abc123", "failed")
+                app_module.pipeline.insert_ready(
+                    "abc123", "pre-abc123", 0, 0, 5, "prepared", [], [], []
+                )
+                app_module.pipeline.insert_ready(
+                    "abc123", "live-session", 0, 0, 5, "live", [], [], []
+                )
+
+                result = app_module.pipeline.delete_prepared("abc123")
+
+                self.assertTrue(result["deleted"])
+                self.assertEqual(result["captions_deleted"], 1)
+                self.assertEqual(app_module.pipeline.get_session("pre-abc123"), [])
+                self.assertEqual(len(app_module.pipeline.get_session("live-session")), 1)
+                self.assertEqual(
+                    app_module.pipeline.get_prepared("abc123")["status"], "none"
+                )
+
+                app_module.pipeline.mark_prepare_started("active123")
+                active = app_module.pipeline.delete_prepared("active123")
+                self.assertEqual(active, {"deleted": False, "reason": "preparing"})
+                self.assertEqual(
+                    app_module.pipeline.get_prepared("active123")["status"],
+                    "preparing",
+                )
+        finally:
+            connection.close()
 
     def test_prepare_api_alias_uses_existing_prepare_flow(self):
         with (
