@@ -46,11 +46,12 @@ class PreparedCaptionTests(unittest.TestCase):
             patch.object(app_module.shutil, "which", side_effect=find_runtime),
             patch.object(app_module.yt_dlp, "YoutubeDL", FakeYoutubeDL),
         ):
-            path, ext, temp_dir = app_module._download_audio("testvideo")
+            path, ext, temp_dir, metadata = app_module._download_audio("testvideo")
 
         try:
             self.assertTrue(os.path.isfile(path))
             self.assertEqual(ext, "m4a")
+            self.assertIsNone(metadata["title"])
             options = FakeYoutubeDL.last_options
             self.assertEqual(options["js_runtimes"], {"node": {"path": "/test/node"}})
             self.assertEqual(options["check_formats"], "selected")
@@ -97,8 +98,14 @@ class PreparedCaptionTests(unittest.TestCase):
             patch.object(
                 app_module,
                 "_download_audio",
-                return_value=(audio_path, "webm", temp_dir),
+                return_value=(
+                    audio_path,
+                    "webm",
+                    temp_dir,
+                    {"title": "Test video", "duration": 12.5},
+                ),
             ),
+            patch.object(app_module.pipeline, "set_prepare_metadata") as set_metadata,
             patch.object(app_module.pipeline, "mark_prepare_started") as mark_started,
             patch.object(app_module.pipeline, "mark_prepare_error"),
             patch.object(app_module.pipeline, "prepare_async") as prepare_async,
@@ -111,6 +118,9 @@ class PreparedCaptionTests(unittest.TestCase):
         self.assertEqual(response.get_json(), {"status": "preparing"})
         self.assertEqual(fake_s3.put_object.call_args.kwargs["ContentType"], "audio/webm")
         mark_started.assert_called_once_with("testvideo")
+        set_metadata.assert_called_once_with(
+            "testvideo", title="Test video", duration=12.5
+        )
         prepare_async.assert_called_once_with("testvideo", "https://example.test/audio")
         self.assertFalse(os.path.exists(temp_dir))
 

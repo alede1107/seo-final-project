@@ -81,6 +81,43 @@ curl http://127.0.0.1:5001/health
 
 The response should be `{"ok":true}`.
 
+## Run The Companion Website
+
+The React companion website is separate from the browser extension, but both
+use the same Flask API and caption database. Keep the backend running, then use
+a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. Vite proxies `/api` requests to the Flask
+backend at `http://127.0.0.1:5001`.
+
+The website has four real, routed pages:
+
+- `/` prepares captions from a public YouTube URL and displays the finalized
+  transcript, gloss, and matched clips.
+- `/history` reviews preparation jobs stored by the website or extension.
+- `/signs` searches the complete `word_to_url.json` vocabulary.
+- `/references` documents the architecture, accessibility decisions,
+  limitations, and stores accessibility feedback.
+
+For a production-style local build, compile the frontend first and then start
+Flask. Flask serves the built site and API from the same port:
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+python -m backend.app
+```
+
+Then open `http://127.0.0.1:5001`.
+
 ## Load The Extension
 
 1. Open `edge://extensions` or `chrome://extensions`.
@@ -98,6 +135,7 @@ Run the local pipeline verification without making AssemblyAI or YouTube calls:
 ```bash
 python -m unittest discover -s tests -v
 python backend/verify_pipeline.py
+cd frontend && npm run build
 ```
 
 For a full prepared-caption test, use the extension and then inspect the result:

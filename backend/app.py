@@ -13,12 +13,13 @@ import os
 import re
 import shutil
 import tempfile
+from pathlib import Path
 
 import boto3
 import yt_dlp
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
-from flask import Flask, jsonify, make_response, request
+from flask import Flask, jsonify, make_response, request, send_from_directory
 
 load_dotenv()
 
@@ -27,10 +28,13 @@ if __package__:
 else:  # Supports `python backend/app.py` in addition to `python -m backend.app`.
     import pipeline
 
-app = Flask(__name__)
+from services.chunk_processor import load_word_map
+
+app = Flask(__name__, static_folder=None)
 
 S3_BUCKET = os.environ.get("S3_BUCKET", "").strip()
 s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
@@ -50,6 +54,8 @@ def add_cors(response):
 @app.route("/prepare", methods=["OPTIONS"])
 @app.route("/prepare/<path:_any>", methods=["OPTIONS"])
 @app.route("/captions/<path:_any>", methods=["OPTIONS"])
+@app.route("/api", methods=["OPTIONS"])
+@app.route("/api/<path:_any>", methods=["OPTIONS"])
 def preflight(_any=None):
     return make_response("", 204)
 
@@ -62,6 +68,7 @@ def _validate(value: str, field: str) -> str:
 
 
 @app.route("/health", methods=["GET"])
+@app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({"ok": True})
 
@@ -133,9 +140,9 @@ def upload():
 
 def _download_audio(video_id):
     """Download bestaudio for a YouTube video_id to a temp file via yt-dlp.
-    Returns (path, ext, tmpdir). The caller must delete tmpdir when done (the
-    local file is only needed until the S3 put; AssemblyAI pulls from S3 after).
-    Raises on failure (caller maps to 502)."""
+    Returns (path, ext, tmpdir, metadata). The caller must delete tmpdir when
+    done (the local file is only needed until the S3 put; AssemblyAI pulls from
+    S3 after). Raises on failure (caller maps to 502)."""
     tmpdir = tempfile.mkdtemp(prefix="captionaid-")
     outtmpl = os.path.join(tmpdir, "%(id)s.%(ext)s")
     js_runtimes = {}
@@ -177,7 +184,11 @@ def _download_audio(video_id):
         ext = os.path.splitext(path)[1].lstrip(".").lower()
         if not ext or not re.fullmatch(r"[a-z0-9]+", ext):
             raise RuntimeError(f"yt-dlp produced an unsupported file extension: {ext!r}")
-        return path, ext, tmpdir
+        metadata = {
+            "title": info.get("title"),
+            "duration": info.get("duration"),
+        }
+        return path, ext, tmpdir, metadata
     except Exception:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise
@@ -194,6 +205,7 @@ def _audio_content_type(ext):
 
 
 @app.route("/prepare", methods=["POST"])
+@app.route("/api/prepare", methods=["POST"])
 def prepare():
     """Kick off whole-video transcription so captions are ready before playback.
     Downloads the audio (yt-dlp), stores the source in S3, and hands a pre-signed
@@ -224,7 +236,12 @@ def prepare():
     pipeline.mark_prepare_started(video_id)
     tmpdir = None
     try:
-        path, ext, tmpdir = _download_audio(video_id)
+        path, ext, tmpdir, metadata = _download_audio(video_id)
+        pipeline.set_prepare_metadata(
+            video_id,
+            title=metadata.get("title"),
+            duration=metadata.get("duration"),
+        )
         key = f"{video_id}/source-audio.{ext}"
         with open(path, "rb") as f:
             s3.put_object(
@@ -256,11 +273,13 @@ def prepare():
 
 
 @app.route("/prepare/<video_id>", methods=["GET"])
+@app.route("/api/prepare/<video_id>", methods=["GET"])
 def prepare_status(video_id):
     return jsonify(pipeline.get_prepared(video_id))
 
 # CAPTION READ 
 @app.route("/captions/<session_id>/<int:chunk_index>", methods=["GET"])
+@app.route("/api/captions/<session_id>/<int:chunk_index>", methods=["GET"])
 def caption_chunk(session_id, chunk_index):
     chunk = pipeline.get_chunk(session_id, chunk_index)
     if chunk is None:
@@ -269,15 +288,130 @@ def caption_chunk(session_id, chunk_index):
 
 
 @app.route("/captions/<session_id>", methods=["GET"])
+@app.route("/api/captions/<session_id>", methods=["GET"])
 def caption_session(session_id):
     """All chunks for a session — what the content script polls."""
     return jsonify({"session_id": session_id, "chunks": pipeline.get_session(session_id)})
 
 
 @app.route("/captions/video/<video_id>", methods=["GET"])
+@app.route("/api/captions/video/<video_id>", methods=["GET"])
 def caption_video(video_id):
     """Cache-hit path: every ready caption ever produced for this video."""
     return jsonify({"video_id": video_id, "chunks": pipeline.get_video(video_id)})
+
+
+@app.route("/api/sessions", methods=["GET"])
+def sessions():
+    try:
+        limit = int(request.args.get("limit", "30"))
+    except ValueError:
+        return jsonify({"error": "limit must be an integer"}), 400
+    items = pipeline.list_prepared(limit=limit)
+    return jsonify({"items": items, "count": len(items)})
+
+
+@app.route("/api", methods=["GET"])
+def api_index():
+    return jsonify(
+        {
+            "ok": True,
+            "service": "CaptionAid API",
+            "resources": ["prepare", "captions", "sessions", "signs", "feedback"],
+        }
+    )
+
+
+def _sign_payload(word, url):
+    return {
+        "word": word.upper(),
+        "url": url,
+        "source": "WLASL vocabulary map",
+    }
+
+
+@app.route("/api/signs", methods=["GET"])
+def signs():
+    word_map = load_word_map()
+    query = request.args.get("q", "").strip().lower()
+    letter = request.args.get("letter", "").strip().lower()
+    try:
+        limit = max(1, min(int(request.args.get("limit", "60")), 250))
+        offset = max(0, int(request.args.get("offset", "0")))
+    except ValueError:
+        return jsonify({"error": "limit and offset must be integers"}), 400
+
+    words = sorted(word_map)
+    if letter:
+        if len(letter) != 1 or not letter.isalpha():
+            return jsonify({"error": "letter must be one alphabetic character"}), 400
+        words = [word for word in words if word.startswith(letter)]
+    if query:
+        words = [word for word in words if query in word]
+
+    page = words[offset:offset + limit]
+    return jsonify(
+        {
+            "items": [_sign_payload(word, word_map[word]) for word in page],
+            "matched_total": len(words),
+            "vocabulary_total": len(word_map),
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
+@app.route("/api/signs/<path:word>", methods=["GET"])
+def sign_detail(word):
+    normalized = re.sub(r"[^a-z0-9']+", " ", word.lower()).strip()
+    url = load_word_map().get(normalized)
+    if not url:
+        return jsonify({"error": "sign not found", "word": word}), 404
+    return jsonify(_sign_payload(normalized, url))
+
+
+@app.route("/api/feedback", methods=["POST"])
+def feedback():
+    body = request.get_json(silent=True) or {}
+    message = str(body.get("message", "")).strip()
+    if len(message) < 3:
+        return jsonify({"error": "feedback must be at least 3 characters"}), 400
+    if len(message) > 4000:
+        return jsonify({"error": "feedback must be 4000 characters or fewer"}), 400
+    feedback_id = pipeline.save_feedback(message)
+    return jsonify({"ok": True, "id": feedback_id}), 201
+
+
+@app.route("/api/<path:_missing>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def missing_api(_missing):
+    return jsonify({"error": "API endpoint not found"}), 404
+
+
+@app.route("/", defaults={"path": ""}, methods=["GET"])
+@app.route("/<path:path>", methods=["GET"])
+def companion_frontend(path):
+    """Serve the built React companion site without affecting API routes."""
+    if not FRONTEND_DIST.is_dir():
+        return jsonify(
+            {
+                "ok": True,
+                "service": "CaptionAid backend",
+                "frontend": "not built",
+                "hint": "Run npm install and npm run build in frontend/.",
+            }
+        )
+
+    requested = (FRONTEND_DIST / path).resolve()
+    try:
+        requested.relative_to(FRONTEND_DIST.resolve())
+    except ValueError:
+        return jsonify({"error": "not found"}), 404
+
+    if path and requested.is_file():
+        return send_from_directory(FRONTEND_DIST, path)
+    if path.startswith("assets/"):
+        return jsonify({"error": "asset not found"}), 404
+    return send_from_directory(FRONTEND_DIST, "index.html")
 
 
 if __name__ == "__main__":

@@ -78,7 +78,18 @@ def init_db():
                 status           TEXT NOT NULL,      -- preparing | ready | error
                 error            TEXT,
                 created_at       REAL NOT NULL,
-                pipeline_version INTEGER NOT NULL DEFAULT 2
+                pipeline_version INTEGER NOT NULL DEFAULT 2,
+                title            TEXT,
+                duration         REAL
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                message    TEXT NOT NULL,
+                created_at REAL NOT NULL
             )
             """
         )
@@ -89,6 +100,8 @@ def init_db():
             "ALTER TABLE captions ADD COLUMN gloss_json TEXT",   # ASL gloss token array
             "ALTER TABLE captions ADD COLUMN clips_json TEXT",   # [{token, url} ...] sign clips
             "ALTER TABLE prepared ADD COLUMN pipeline_version INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE prepared ADD COLUMN title TEXT",
+            "ALTER TABLE prepared ADD COLUMN duration REAL",
         ):
             try:
                 _conn.execute(ddl)
@@ -277,18 +290,103 @@ def get_prepared(video_id):
         return {"video_id": video_id, "status": "none", "error": None}
     if row["pipeline_version"] != PREPARE_PIPELINE_VERSION:
         return {"video_id": video_id, "status": "none", "error": None, "stale": True}
-    return {"video_id": video_id, "status": row["status"], "error": row["error"]}
+    return {
+        "video_id": video_id,
+        "status": row["status"],
+        "error": row["error"],
+        "title": row["title"],
+        "duration": row["duration"],
+        "created_at": row["created_at"],
+    }
 
 
 def _set_prepared(video_id, status, error=None):
     with _lock:
         _conn.execute(
-            "INSERT OR REPLACE INTO prepared "
-            "(video_id, status, error, created_at, pipeline_version) "
-            "VALUES (?, ?, ?, ?, ?)",
+            """
+            INSERT INTO prepared
+                (video_id, status, error, created_at, pipeline_version)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(video_id) DO UPDATE SET
+                status=excluded.status,
+                error=excluded.error,
+                created_at=excluded.created_at,
+                pipeline_version=excluded.pipeline_version
+            """,
             (video_id, status, error, time.time(), PREPARE_PIPELINE_VERSION),
         )
         _conn.commit()
+
+
+def set_prepare_metadata(video_id, title=None, duration=None):
+    """Attach display metadata discovered by yt-dlp without changing job state."""
+    clean_title = str(title).strip()[:300] if title else None
+    clean_duration = float(duration) if duration is not None else None
+    with _lock:
+        _conn.execute(
+            "UPDATE prepared SET title=?, duration=? WHERE video_id=?",
+            (clean_title, clean_duration, video_id),
+        )
+        _conn.commit()
+
+
+def list_prepared(limit=50):
+    """Return recent whole-video jobs with summary data for the companion site."""
+    safe_limit = max(1, min(int(limit), 100))
+    with _lock:
+        jobs = _conn.execute(
+            "SELECT * FROM prepared ORDER BY created_at DESC LIMIT ?",
+            (safe_limit,),
+        ).fetchall()
+
+        results = []
+        for job in jobs:
+            rows = _conn.execute(
+                "SELECT text, clips_json, video_time_end FROM captions "
+                "WHERE video_id=? AND status='ready' ORDER BY video_time_offset",
+                (job["video_id"],),
+            ).fetchall()
+
+            sign_count = 0
+            for row in rows:
+                try:
+                    sign_count += len(json.loads(row["clips_json"] or "[]"))
+                except (TypeError, json.JSONDecodeError):
+                    pass
+
+            transcript_preview = " ".join(
+                row["text"].strip() for row in rows[:2] if row["text"]
+            )[:240]
+            caption_duration = max(
+                (float(row["video_time_end"] or 0) for row in rows),
+                default=0.0,
+            )
+            results.append(
+                {
+                    "video_id": job["video_id"],
+                    "session_id": f"pre-{job['video_id']}",
+                    "title": job["title"] or f"YouTube video {job['video_id']}",
+                    "status": job["status"],
+                    "error": job["error"],
+                    "created_at": job["created_at"],
+                    "duration": job["duration"] or caption_duration,
+                    "chunk_count": len(rows),
+                    "sign_count": sign_count,
+                    "transcript_preview": transcript_preview,
+                }
+            )
+    return results
+
+
+def save_feedback(message):
+    """Persist accessibility feedback from the companion website."""
+    with _lock:
+        cursor = _conn.execute(
+            "INSERT INTO feedback (message, created_at) VALUES (?, ?)",
+            (message, time.time()),
+        )
+        _conn.commit()
+        return cursor.lastrowid
 
 
 def mark_prepare_started(video_id):
