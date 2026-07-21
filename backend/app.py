@@ -13,19 +13,23 @@ import os
 import re
 import shutil
 import tempfile
-import yt_dlp
+
 import boto3
+import yt_dlp
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request
 
-import pipeline
-
 load_dotenv()
+
+if __package__:
+    from . import pipeline
+else:  # Supports `python backend/app.py` in addition to `python -m backend.app`.
+    import pipeline
 
 app = Flask(__name__)
 
-S3_BUCKET = os.environ.get("S3_BUCKET")
+S3_BUCKET = os.environ.get("S3_BUCKET", "").strip()
 s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
@@ -64,7 +68,7 @@ def health():
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    if S3_BUCKET is None:
+    if not S3_BUCKET:
         return jsonify({"error": "server misconfigured: S3_BUCKET not set"}), 500
 
     audio = request.files.get("audio")
@@ -132,25 +136,61 @@ def _download_audio(video_id):
     Returns (path, ext, tmpdir). The caller must delete tmpdir when done (the
     local file is only needed until the S3 put; AssemblyAI pulls from S3 after).
     Raises on failure (caller maps to 502)."""
-    
-
     tmpdir = tempfile.mkdtemp(prefix="captionaid-")
     outtmpl = os.path.join(tmpdir, "%(id)s.%(ext)s")
+    js_runtimes = {}
+    for runtime, executable in (("deno", "deno"), ("node", "node"), ("quickjs", "qjs")):
+        path = shutil.which(executable)
+        if path:
+            js_runtimes[runtime] = {"path": path}
+
+    if not js_runtimes:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise RuntimeError(
+            "No supported JavaScript runtime found. Install Node.js 22+ or Deno 2.3+ "
+            "and make sure it is available on PATH."
+        )
+
     opts = {
-        "format": "bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best[ext=mp4]/best",
         "outtmpl": outtmpl,
         "quiet": True,
         "noplaylist": True,
-        "postprocessors": [
-            {"key": "FFmpegExtractAudio", "preferredcodec": "m4a"},
-        ],
+        "check_formats": "selected",
+        "extractor_retries": 3,
+        "fragment_retries": 3,
+        "retries": 3,
+        "socket_timeout": 30,
+        "js_runtimes": js_runtimes,
     }
     url = f"https://www.youtube.com/watch?v={video_id}"
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.extract_info(url, download=True)
-    # The postprocessor rewrites the extension to m4a.
-    path = os.path.join(tmpdir, f"{video_id}.m4a")
-    return path, "m4a", tmpdir
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            downloads = info.get("requested_downloads") or []
+            path = next((item.get("filepath") for item in downloads if item.get("filepath")), None)
+            path = path or info.get("_filename") or ydl.prepare_filename(info)
+
+        if not path or not os.path.isfile(path) or os.path.getsize(path) == 0:
+            raise RuntimeError("yt-dlp completed without producing an audio file")
+
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        if not ext or not re.fullmatch(r"[a-z0-9]+", ext):
+            raise RuntimeError(f"yt-dlp produced an unsupported file extension: {ext!r}")
+        return path, ext, tmpdir
+    except Exception:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
+
+
+def _audio_content_type(ext):
+    return {
+        "m4a": "audio/mp4",
+        "mp4": "video/mp4",
+        "ogg": "audio/ogg",
+        "opus": "audio/ogg",
+        "webm": "audio/webm",
+    }.get(ext, "application/octet-stream")
 
 
 @app.route("/prepare", methods=["POST"])
@@ -158,7 +198,7 @@ def prepare():
     """Kick off whole-video transcription so captions are ready before playback.
     Downloads the audio (yt-dlp), stores the source in S3, and hands a pre-signed
     URL to the pipeline. Idempotent: a ready video returns immediately."""
-    if S3_BUCKET is None:
+    if not S3_BUCKET:
         return jsonify({"error": "server misconfigured: S3_BUCKET not set"}), 500
 
     body = request.get_json(silent=True) or {}
@@ -179,22 +219,34 @@ def prepare():
         pipeline.prepare_async(video_id, None)
         return jsonify({"status": "preparing"}), 202
 
+    # Persist this before downloading so a closed/reopened extension popup can
+    # still see that preparation is active and will not launch a duplicate job.
+    pipeline.mark_prepare_started(video_id)
     tmpdir = None
     try:
         path, ext, tmpdir = _download_audio(video_id)
         key = f"{video_id}/source-audio.{ext}"
         with open(path, "rb") as f:
-            s3.put_object(Bucket=S3_BUCKET, Key=key, Body=f, ContentType="audio/mp4")
+            s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+                Body=f,
+                ContentType=_audio_content_type(ext),
+            )
         audio_url = s3.generate_presigned_url(
             "get_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=3600
         )
     except (BotoCoreError, ClientError) as e:
         app.logger.error("S3 source upload failed: %s", e)
+        pipeline.mark_prepare_error(video_id, "S3 source upload failed")
         return jsonify({"error": "s3 upload failed"}), 502
-    except Exception as e:  # noqa: BLE001 — yt-dlp/ffmpeg failures
+    except Exception as e:  # noqa: BLE001 - yt-dlp exposes several error types.
         app.logger.error("audio download failed: %s", e)
-        return jsonify({"error": "audio download failed"}), 502
-    
+        detail = re.sub(r"\s+", " ", str(e)).strip()
+        error = f"YouTube audio download failed: {detail}"
+        pipeline.mark_prepare_error(video_id, error)
+        return jsonify({"error": error}), 502
+
     finally:
         if tmpdir is not None:
             shutil.rmtree(tmpdir, ignore_errors=True)

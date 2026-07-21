@@ -38,6 +38,7 @@ from backend.text_to_gloss import to_gloss
 DB_PATH = Path(__file__).resolve().parent / "captions.db"
 ASSEMBLYAI_KEY = os.environ.get("ASSEMBLYAI_API_KEY")
 AAI_BASE = "https://api.assemblyai.com/v2"
+PREPARE_PIPELINE_VERSION = 2
 
 _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 _conn.row_factory = sqlite3.Row
@@ -73,10 +74,11 @@ def init_db():
         _conn.execute(
             """
             CREATE TABLE IF NOT EXISTS prepared (
-                video_id   TEXT PRIMARY KEY,
-                status     TEXT NOT NULL,      -- preparing | ready | error
-                error      TEXT,
-                created_at REAL NOT NULL
+                video_id         TEXT PRIMARY KEY,
+                status           TEXT NOT NULL,      -- preparing | ready | error
+                error            TEXT,
+                created_at       REAL NOT NULL,
+                pipeline_version INTEGER NOT NULL DEFAULT 2
             )
             """
         )
@@ -86,6 +88,7 @@ def init_db():
             "ALTER TABLE captions ADD COLUMN video_time_end REAL NOT NULL DEFAULT 0",
             "ALTER TABLE captions ADD COLUMN gloss_json TEXT",   # ASL gloss token array
             "ALTER TABLE captions ADD COLUMN clips_json TEXT",   # [{token, url} ...] sign clips
+            "ALTER TABLE prepared ADD COLUMN pipeline_version INTEGER NOT NULL DEFAULT 1",
         ):
             try:
                 _conn.execute(ddl)
@@ -272,17 +275,28 @@ def get_prepared(video_id):
         ).fetchone()
     if row is None:
         return {"video_id": video_id, "status": "none", "error": None}
+    if row["pipeline_version"] != PREPARE_PIPELINE_VERSION:
+        return {"video_id": video_id, "status": "none", "error": None, "stale": True}
     return {"video_id": video_id, "status": row["status"], "error": row["error"]}
 
 
 def _set_prepared(video_id, status, error=None):
     with _lock:
         _conn.execute(
-            "INSERT OR REPLACE INTO prepared (video_id, status, error, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (video_id, status, error, time.time()),
+            "INSERT OR REPLACE INTO prepared "
+            "(video_id, status, error, created_at, pipeline_version) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (video_id, status, error, time.time(), PREPARE_PIPELINE_VERSION),
         )
         _conn.commit()
+
+
+def mark_prepare_started(video_id):
+    _set_prepared(video_id, "preparing")
+
+
+def mark_prepare_error(video_id, error):
+    _set_prepared(video_id, "error", str(error))
 
 
 def prepare_async(video_id, audio_url):
@@ -322,6 +336,10 @@ def _segment_words(words, seg_ms=10_000):
 def _prepare(video_id, audio_url):
     session_id = f"pre-{video_id}"
     try:
+        with _lock:
+            _conn.execute("DELETE FROM captions WHERE session_id=?", (session_id,))
+            _conn.commit()
+
         if not ASSEMBLYAI_KEY:
             # Mock mode: three fake 10s segments so the prepare -> skip-capture
             # path is testable with no API key and no network.
@@ -338,6 +356,8 @@ def _prepare(video_id, audio_url):
             return
 
         words = _transcribe_words(audio_url)
+        if not words:
+            raise RuntimeError("AssemblyAI completed but returned no transcript words")
         for idx, (offset, end, text, bucket) in enumerate(_segment_words(words)):
             gloss, clips = _gloss_and_clips(text, words=bucket, chunk_duration=end - offset)
             insert_ready(video_id, session_id, idx, offset, end, text, bucket, gloss, clips)
