@@ -317,7 +317,7 @@ def api_index():
         {
             "ok": True,
             "service": "CaptionAid API",
-            "resources": ["prepare", "captions", "sessions", "signs", "feedback"],
+            "resources": ["prepare", "captions", "sessions", "signs"],
         }
     )
 
@@ -368,18 +368,6 @@ def sign_detail(word):
     if not url:
         return jsonify({"error": "sign not found", "word": word}), 404
     return jsonify(_sign_payload(normalized, url))
-
-
-@app.route("/api/feedback", methods=["POST"])
-def feedback():
-    body = request.get_json(silent=True) or {}
-    message = str(body.get("message", "")).strip()
-    if len(message) < 3:
-        return jsonify({"error": "feedback must be at least 3 characters"}), 400
-    if len(message) > 4000:
-        return jsonify({"error": "feedback must be 4000 characters or fewer"}), 400
-    feedback_id = pipeline.save_feedback(message)
-    return jsonify({"ok": True, "id": feedback_id}), 201
 
 
 @app.route("/api/<path:_missing>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

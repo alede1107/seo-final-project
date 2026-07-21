@@ -1,3 +1,4 @@
+import * as ScrollArea from "@radix-ui/react-scroll-area";
 import { useEffect, useRef, useState } from "react";
 
 import type { SignClip } from "../types";
@@ -13,30 +14,30 @@ interface SignSequencePlayerProps {
 export default function SignSequencePlayer({
   clips,
   title = "Sign sequence",
-  emptyMessage = "Choose a caption or vocabulary word to preview its sign clip.",
+  emptyMessage = "Select a caption to preview its matched sign clips.",
 }: SignSequencePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [index, setIndex] = useState(0);
   const [speedMode, setSpeedMode] = useState<SpeedMode>("fit");
   const [playing, setPlaying] = useState(false);
-
+  const clipKey = clips.map((item) => item.url).join("|");
   const clip = clips[index];
 
   useEffect(() => {
     setIndex(0);
     setPlaying(false);
-  }, [clips]);
+  }, [clipKey]);
 
   const applySpeed = () => {
     const video = videoRef.current;
     if (!video || !Number.isFinite(video.duration)) return;
-    const numericSpeed =
+    const requestedSpeed =
       speedMode === "fit"
         ? clip?.target_duration
           ? video.duration / clip.target_duration
           : 1
         : Number(speedMode);
-    video.playbackRate = Math.max(0.5, Math.min(numericSpeed, 4));
+    video.playbackRate = Math.max(0.5, Math.min(requestedSpeed, 4));
   };
 
   useEffect(() => {
@@ -49,51 +50,43 @@ export default function SignSequencePlayer({
     void video.play().catch(() => setPlaying(false));
   }, [index, playing]);
 
-  const togglePlayback = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) {
-      setPlaying(true);
-      void video.play().catch(() => setPlaying(false));
-    } else {
-      video.pause();
-      setPlaying(false);
-    }
-  };
-
   const moveTo = (nextIndex: number) => {
     setIndex(Math.max(0, Math.min(nextIndex, clips.length - 1)));
   };
 
   if (!clip) {
     return (
-      <section className="sign-player empty-panel" aria-label={title}>
-        <div className="empty-icon" aria-hidden="true">ASL</div>
-        <h2>{title}</h2>
-        <p>{emptyMessage}</p>
+      <section className="grid min-h-64 place-items-center border border-white/10 bg-neutral-900/40 px-6 text-center" aria-label={title}>
+        <div>
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-neutral-700">ASL clip</span>
+          <h2 className="mt-2 text-sm font-extrabold tracking-tight text-neutral-300">{title}</h2>
+          <p className="mt-1 max-w-xs text-xs leading-5 text-neutral-600">{emptyMessage}</p>
+        </div>
       </section>
     );
   }
 
   return (
-    <section className="sign-player" aria-label={title}>
-      <div className="panel-heading">
-        <div>
-          <span className="eyebrow">Vocabulary clip</span>
-          <h2>{clip.token}</h2>
+    <section className="overflow-hidden rounded-md border border-white/10 bg-neutral-900/50" aria-label={title}>
+      <div className="flex h-12 items-center justify-between border-b border-white/10 px-3">
+        <div className="min-w-0">
+          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-600">Now signing</p>
+          <h2 className="truncate text-sm font-extrabold tracking-tight text-neutral-100">{clip.token}</h2>
         </div>
-        <span className="queue-count">
+        <span className="font-mono text-[10px] text-neutral-500">
           {index + 1} / {clips.length}
         </span>
       </div>
 
-      <div className="sign-video-frame">
+      <div className="aspect-[4/3] border-b border-white/10 bg-black">
         <video
           key={clip.url}
           ref={videoRef}
           src={clip.url}
+          className="size-full object-contain"
           preload="metadata"
           playsInline
+          controls
           onLoadedMetadata={applySpeed}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
@@ -106,34 +99,35 @@ export default function SignSequencePlayer({
           }}
           aria-label={`ASL vocabulary clip for ${clip.token}`}
         />
-        <button className="video-play-button" type="button" onClick={togglePlayback}>
-          {playing ? "Pause" : "Play"} {clip.token}
-        </button>
       </div>
 
-      <div className="player-controls">
-        <div className="transport-controls">
-          <button type="button" onClick={() => moveTo(index - 1)} disabled={index === 0}>
+      <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => moveTo(index - 1)}
+            disabled={index === 0}
+            className="focus-ring h-8 rounded-md border border-white/10 px-2.5 text-xs font-semibold text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+          >
             Previous
-          </button>
-          <button type="button" className="primary-small" onClick={togglePlayback}>
-            {playing ? "Pause" : "Play"}
           </button>
           <button
             type="button"
             onClick={() => moveTo(index + 1)}
             disabled={index === clips.length - 1}
+            className="focus-ring h-8 rounded-md border border-white/10 px-2.5 text-xs font-semibold text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
           >
             Next
           </button>
         </div>
-        <label className="speed-control">
-          Playback
+        <label className="flex items-center gap-2 font-mono text-[10px] text-neutral-600">
+          Speed
           <select
             value={speedMode}
             onChange={(event) => setSpeedMode(event.target.value as SpeedMode)}
+            className="focus-ring h-8 rounded-md border border-white/10 bg-neutral-950 px-2 text-[10px] text-neutral-300"
           >
-            <option value="fit">Fit caption</option>
+            <option value="fit">Fit</option>
             <option value="0.5">0.5x</option>
             <option value="1">1x</option>
             <option value="1.5">1.5x</option>
@@ -142,21 +136,36 @@ export default function SignSequencePlayer({
         </label>
       </div>
 
-      <ol className="clip-queue" aria-label="Sign clip queue">
-        {clips.map((item, itemIndex) => (
-          <li key={`${item.token}-${itemIndex}`}>
-            <button
-              type="button"
-              className={itemIndex === index ? "active" : undefined}
-              aria-current={itemIndex === index ? "true" : undefined}
-              onClick={() => moveTo(itemIndex)}
-            >
-              <span>{itemIndex + 1}</span>
-              {item.token}
-            </button>
-          </li>
-        ))}
-      </ol>
+      {clips.length > 1 && (
+        <ScrollArea.Root className="max-h-40 overflow-hidden">
+          <ScrollArea.Viewport className="max-h-40 w-full">
+            <ol className="divide-y divide-white/10">
+              {clips.map((item, itemIndex) => (
+                <li key={`${item.token}-${itemIndex}`}>
+                  <button
+                    type="button"
+                    className={`focus-ring flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition-colors ${
+                      itemIndex === index
+                        ? "bg-neutral-800 text-white"
+                        : "text-neutral-500 hover:bg-neutral-800/50 hover:text-neutral-200"
+                    }`}
+                    aria-current={itemIndex === index ? "true" : undefined}
+                    onClick={() => moveTo(itemIndex)}
+                  >
+                    <span className="font-mono text-[9px] text-neutral-600">
+                      {String(itemIndex + 1).padStart(2, "0")}
+                    </span>
+                    <span className="font-semibold tracking-tight">{item.token}</span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          </ScrollArea.Viewport>
+          <ScrollArea.Scrollbar orientation="vertical" className="flex w-2 bg-neutral-950 p-0.5">
+            <ScrollArea.Thumb className="relative flex-1 rounded-full bg-neutral-700" />
+          </ScrollArea.Scrollbar>
+        </ScrollArea.Root>
+      )}
     </section>
   );
 }

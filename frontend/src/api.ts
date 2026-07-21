@@ -2,7 +2,6 @@ import type {
   CaptionChunk,
   PrepareStatus,
   SessionSummary,
-  SignEntry,
   SignPage,
 } from "./types";
 
@@ -78,15 +77,4 @@ export function getSigns(
   if (query) params.set("q", query);
   if (letter) params.set("letter", letter);
   return requestJson<SignPage>(`/api/signs?${params}`, { signal });
-}
-
-export function getSign(word: string, signal?: AbortSignal): Promise<SignEntry> {
-  return requestJson<SignEntry>(`/api/signs/${encodeURIComponent(word)}`, { signal });
-}
-
-export function submitFeedback(message: string): Promise<{ ok: boolean; id: number }> {
-  return requestJson<{ ok: boolean; id: number }>("/api/feedback", {
-    method: "POST",
-    body: JSON.stringify({ message }),
-  });
 }

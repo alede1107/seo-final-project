@@ -49,20 +49,6 @@ class CompanionApiTests(unittest.TestCase):
         self.assertEqual(response.get_json(), {"items": rows, "count": 1})
         list_prepared.assert_called_once_with(limit=12)
 
-    def test_feedback_is_validated_and_saved(self):
-        with patch.object(app_module.pipeline, "save_feedback", return_value=7) as save_feedback:
-            response = self.client.post(
-                "/api/feedback",
-                json={"message": "Please make the focus indicator more visible."},
-            )
-
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.get_json(), {"ok": True, "id": 7})
-        save_feedback.assert_called_once()
-
-        invalid = self.client.post("/api/feedback", json={"message": "  "})
-        self.assertEqual(invalid.status_code, 400)
-
     def test_prepare_api_alias_uses_existing_prepare_flow(self):
         with (
             patch.object(app_module, "S3_BUCKET", "test-bucket"),

@@ -84,15 +84,6 @@ def init_db():
             )
             """
         )
-        _conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS feedback (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                message    TEXT NOT NULL,
-                created_at REAL NOT NULL
-            )
-            """
-        )
         # Migrate pre-existing DBs that lack newer columns. Adding a column that
         # already exists raises OperationalError, which we swallow.
         for ddl in (
@@ -376,17 +367,6 @@ def list_prepared(limit=50):
                 }
             )
     return results
-
-
-def save_feedback(message):
-    """Persist accessibility feedback from the companion website."""
-    with _lock:
-        cursor = _conn.execute(
-            "INSERT INTO feedback (message, created_at) VALUES (?, ?)",
-            (message, time.time()),
-        )
-        _conn.commit()
-        return cursor.lastrowid
 
 
 def mark_prepare_started(video_id):

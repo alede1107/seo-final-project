@@ -96,14 +96,15 @@ npm run dev
 Open `http://127.0.0.1:5173`. Vite proxies `/api` requests to the Flask
 backend at `http://127.0.0.1:5001`.
 
-The website has four real, routed pages:
+The website stays focused on two real workflows:
 
-- `/` prepares captions from a public YouTube URL and displays the finalized
-  transcript, gloss, and matched clips.
-- `/history` reviews preparation jobs stored by the website or extension.
-- `/signs` searches the complete `word_to_url.json` vocabulary.
-- `/references` documents the architecture, accessibility decisions,
-  limitations, and stores accessibility feedback.
+- `/` reviews preparation history, captions, ASL gloss, and matched clips. The
+  **Prepare video** button accepts a public YouTube URL.
+- `/signs` searches and plays entries from the complete `word_to_url.json`
+  vocabulary.
+
+The browser extension remains the third user-facing surface and uses the same
+backend and caption records.
 
 For a production-style local build, compile the frontend first and then start
 Flask. Flask serves the built site and API from the same port:
