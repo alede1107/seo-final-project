@@ -437,6 +437,17 @@ export default function HistoryPage() {
             </div>
             <SignSequencePlayer
               clips={selectedChunk?.clips || []}
+              sequenceId={
+                selectedChunk
+                  ? `${selectedChunk.session_id}:${selectedChunk.chunk_index}`
+                  : undefined
+              }
+              preloadClips={filteredChunks[activeChunkIndex + 1]?.clips || []}
+              preloadSequenceId={
+                filteredChunks[activeChunkIndex + 1]
+                  ? `${filteredChunks[activeChunkIndex + 1].session_id}:${filteredChunks[activeChunkIndex + 1].chunk_index}`
+                  : undefined
+              }
               emptyMessage="This caption has no word in the current sign vocabulary."
               sync={
                 selectedChunk && videoPlayback.ready

@@ -4,9 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import type { SignClip } from "../types";
 
 type SpeedMode = "fit" | "0.5" | "1" | "1.5" | "2";
+const MIN_SYNCED_SIGN_DURATION = 0.75;
 
 interface SignSequencePlayerProps {
   clips: SignClip[];
+  sequenceId?: string;
+  preloadClips?: SignClip[];
+  preloadSequenceId?: string;
   title?: string;
   emptyMessage?: string;
   sync?: {
@@ -19,12 +23,22 @@ interface SignSequencePlayerProps {
 
 function clipPosition(clips: SignClip[], elapsed: number, segmentDuration: number) {
   if (!clips.length) return null;
-  const fallbackDuration = Math.max(0.1, segmentDuration) / clips.length;
+  const safeSegmentDuration = Math.max(0.1, segmentDuration);
+  const averageDuration = safeSegmentDuration / clips.length;
+  const minimumDuration = Math.min(MIN_SYNCED_SIGN_DURATION, averageDuration);
+  const rawDurations = clips.map((clip) => {
+    const parsedDuration = Number(clip.target_duration);
+    return parsedDuration > 0 ? parsedDuration : averageDuration;
+  });
+  const rawTotal = rawDurations.reduce((total, duration) => total + duration, 0);
+  const flexibleTime = Math.max(0, safeSegmentDuration - minimumDuration * clips.length);
+  const durations = rawDurations.map(
+    (duration) => minimumDuration + flexibleTime * (duration / rawTotal),
+  );
   let cursor = 0;
 
   for (let index = 0; index < clips.length; index += 1) {
-    const parsedDuration = Number(clips[index].target_duration);
-    const targetDuration = parsedDuration > 0 ? parsedDuration : fallbackDuration;
+    const targetDuration = durations[index];
     const next = cursor + targetDuration;
     if (elapsed < next || index === clips.length - 1) {
       return {
@@ -41,15 +55,35 @@ function clipPosition(clips: SignClip[], elapsed: number, segmentDuration: numbe
 
 export default function SignSequencePlayer({
   clips,
+  sequenceId,
+  preloadClips = [],
+  preloadSequenceId,
   title = "Sign sequence",
   emptyMessage = "Select a caption to preview its matched sign clips.",
   sync,
 }: SignSequencePlayerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [index, setIndex] = useState(0);
+  const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const preloadRequests = useRef<WeakSet<HTMLVideoElement>>(new WeakSet());
   const [speedMode, setSpeedMode] = useState<SpeedMode>("fit");
   const [playing, setPlaying] = useState(false);
   const clipKey = clips.map((item) => item.url).join("|");
+  const preloadKey = preloadClips.map((item) => item.url).join("|");
+  const currentSequenceId = sequenceId || `current:${clipKey}`;
+  const nextSequenceId = preloadSequenceId || `next:${preloadKey}`;
+  const [selection, setSelection] = useState({
+    sequenceId: currentSequenceId,
+    index: 0,
+  });
+  const index = selection.sequenceId === currentSequenceId ? selection.index : 0;
+  const setIndex = (next: number | ((current: number) => number)) => {
+    setSelection((current) => {
+      const currentIndex = current.sequenceId === currentSequenceId ? current.index : 0;
+      return {
+        sequenceId: currentSequenceId,
+        index: typeof next === "function" ? next(currentIndex) : next,
+      };
+    });
+  };
   const syncedPosition = sync
     ? clipPosition(clips, sync.currentTime, sync.segmentDuration)
     : null;
@@ -58,22 +92,45 @@ export default function SignSequencePlayer({
   useEffect(() => {
     setIndex(0);
     setPlaying(false);
-  }, [clipKey]);
+  }, [clipKey, currentSequenceId]);
 
   useEffect(() => {
     if (syncedPosition) setIndex(syncedPosition.index);
   }, [syncedPosition?.index]);
 
+  const videoId = (id: string, clipIndex: number) => `${id}:${clipIndex}`;
+  const activeVideo = () => videoRefs.current.get(videoId(currentSequenceId, index));
+
+  useEffect(() => {
+    const targets = [
+      ...clips.slice(index, index + 5).map((_, offset) =>
+        videoRefs.current.get(videoId(currentSequenceId, index + offset)),
+      ),
+      ...preloadClips.slice(0, 2).map((_, preloadIndex) =>
+        videoRefs.current.get(videoId(nextSequenceId, preloadIndex)),
+      ),
+    ];
+
+    for (const video of targets) {
+      if (!video || preloadRequests.current.has(video)) continue;
+      video.preload = "auto";
+      video.load();
+      preloadRequests.current.add(video);
+    }
+  }, [clipKey, currentSequenceId, index, nextSequenceId, preloadKey]);
+
   const applySpeed = () => {
-    const video = videoRef.current;
+    const video = activeVideo();
     if (!video || !Number.isFinite(video.duration)) return;
     const requestedSpeed =
       speedMode === "fit"
-        ? clip?.target_duration
-          ? (video.duration / clip.target_duration) * (sync?.playbackRate || 1)
+        ? syncedPosition?.index === index
+          ? (video.duration / syncedPosition.targetDuration) * (sync?.playbackRate || 1)
+          : clip?.target_duration
+            ? video.duration / clip.target_duration
           : 1
         : Number(speedMode);
-    video.playbackRate = Math.max(0.25, Math.min(requestedSpeed, 16));
+    video.playbackRate = Math.max(0.5, Math.min(requestedSpeed, 2));
   };
 
   useEffect(() => {
@@ -81,7 +138,7 @@ export default function SignSequencePlayer({
   }, [speedMode, clip, sync?.playbackRate]);
 
   const alignToYouTube = (force = false) => {
-    const video = videoRef.current;
+    const video = activeVideo();
     if (!video || !syncedPosition || syncedPosition.index !== index) return;
     if (!Number.isFinite(video.duration) || video.duration <= 0) return;
 
@@ -95,11 +152,7 @@ export default function SignSequencePlayer({
   };
 
   useEffect(() => {
-    alignToYouTube();
-  }, [sync?.currentTime, syncedPosition?.index, index]);
-
-  useEffect(() => {
-    const video = videoRef.current;
+    const video = activeVideo();
     if (!video) return;
     if (sync?.playing || playing) {
       void video.play().catch(() => {
@@ -139,35 +192,67 @@ export default function SignSequencePlayer({
       </div>
 
       <div className="aspect-[4/3] border-b border-white/10 bg-black">
-        <video
-          key={clip.url}
-          ref={videoRef}
-          src={clip.url}
-          className="size-full object-contain"
-          preload="metadata"
-          playsInline
-          muted
-          controls
-          onLoadedMetadata={() => {
-            applySpeed();
-            alignToYouTube(true);
-          }}
-          onPlay={() => {
-            if (!sync?.playing) setPlaying(true);
-          }}
-          onPause={() => {
-            if (!sync?.playing) setPlaying(false);
-          }}
-          onEnded={() => {
-            if (sync?.playing) return;
-            if (index < clips.length - 1) {
-              setIndex((current) => current + 1);
-            } else {
-              setPlaying(false);
-            }
-          }}
-          aria-label={`ASL vocabulary clip for ${clip.token}`}
-        />
+        {[
+          ...clips.map((item, itemIndex) => ({
+            clip: item,
+            clipIndex: itemIndex,
+            id: currentSequenceId,
+            current: true,
+          })),
+          ...preloadClips.slice(0, 2).map((item, itemIndex) => ({
+            clip: item,
+            clipIndex: itemIndex,
+            id: nextSequenceId,
+            current: false,
+          })),
+        ].map((item) => {
+          const id = videoId(item.id, item.clipIndex);
+          const active = item.current && item.clipIndex === index;
+          const preloading =
+            !item.current ||
+            (item.clipIndex >= index && item.clipIndex < index + 5);
+
+          return (
+            <video
+              key={id}
+              ref={(element) => {
+                if (element) videoRefs.current.set(id, element);
+                else videoRefs.current.delete(id);
+              }}
+              src={item.clip.url}
+              className={active ? "size-full object-contain" : "hidden"}
+              preload={preloading ? "auto" : "metadata"}
+              playsInline
+              muted
+              controls={active}
+              onLoadedMetadata={() => {
+                if (!active) return;
+                applySpeed();
+                alignToYouTube(true);
+              }}
+              onCanPlay={() => {
+                if (active && (sync?.playing || playing)) {
+                  void activeVideo()?.play().catch(() => undefined);
+                }
+              }}
+              onPlay={() => {
+                if (active && !sync?.playing) setPlaying(true);
+              }}
+              onPause={() => {
+                if (active && !sync?.playing) setPlaying(false);
+              }}
+              onEnded={() => {
+                if (!active || sync?.playing) return;
+                if (index < clips.length - 1) {
+                  setIndex((current) => current + 1);
+                } else {
+                  setPlaying(false);
+                }
+              }}
+              aria-label={active ? `ASL vocabulary clip for ${item.clip.token}` : undefined}
+            />
+          );
+        })}
       </div>
 
       <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
