@@ -6,6 +6,7 @@ S3 key layout:
 
 Env vars:
     AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET
+    CAPTION_AWS_ACCESS_KEY_ID, CAPTION_AWS_SECRET_ACCESS_KEY (Vercel aliases)
     ASSEMBLYAI_API_KEY   (optional - unset runs the pipeline in mock mode)
 """
 
@@ -30,6 +31,8 @@ load_dotenv(PROJECT_ROOT / ".env", override=True)
 for env_key in (
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
+    "CAPTION_AWS_ACCESS_KEY_ID",
+    "CAPTION_AWS_SECRET_ACCESS_KEY",
     "AWS_REGION",
     "S3_BUCKET",
     "ASSEMBLYAI_API_KEY",
@@ -39,6 +42,15 @@ for env_key in (
 ):
     if env_key in os.environ:
         os.environ[env_key] = os.environ[env_key].strip()
+
+
+def _first_env(*keys):
+    for key in keys:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return ""
+
 
 if __package__:
     from . import pipeline
@@ -51,7 +63,14 @@ from services.chunk_processor import load_word_map
 app = Flask(__name__, static_folder=None)
 
 S3_BUCKET = os.environ.get("S3_BUCKET", "").strip()
-s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+AWS_ACCESS_KEY = _first_env("CAPTION_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+AWS_SECRET_KEY = _first_env("CAPTION_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+s3 = boto3.client(
+    "s3",
+    region_name=os.environ.get("AWS_REGION", "us-east-1"),
+    aws_access_key_id=AWS_ACCESS_KEY or None,
+    aws_secret_access_key=AWS_SECRET_KEY or None,
+)
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
 CLOUD_STORE_ENABLED = (
@@ -115,12 +134,11 @@ def _validate(value: str, field: str) -> str:
 def health():
     if CLOUD_STORE_ENABLED:
         missing = []
-        for key in (
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "S3_BUCKET",
-            "ASSEMBLYAI_API_KEY",
-        ):
+        if not AWS_ACCESS_KEY:
+            missing.append("CAPTION_AWS_ACCESS_KEY_ID")
+        if not AWS_SECRET_KEY:
+            missing.append("CAPTION_AWS_SECRET_ACCESS_KEY")
+        for key in ("S3_BUCKET", "ASSEMBLYAI_API_KEY"):
             if not os.environ.get(key, "").strip():
                 missing.append(key)
         if missing:

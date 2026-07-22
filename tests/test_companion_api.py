@@ -15,6 +15,35 @@ class CompanionApiTests(unittest.TestCase):
         self.assertEqual(response.get_json(), {"ok": True})
         self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
 
+    def test_cloud_health_accepts_caption_aws_aliases(self):
+        with (
+            patch.object(app_module, "CLOUD_STORE_ENABLED", True),
+            patch.object(app_module, "AWS_ACCESS_KEY", "access-key"),
+            patch.object(app_module, "AWS_SECRET_KEY", "secret-key"),
+            patch.dict(
+                app_module.os.environ,
+                {"S3_BUCKET": "test-bucket", "ASSEMBLYAI_API_KEY": "test-key"},
+            ),
+        ):
+            response = self.client.get("/api/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"ok": True})
+
+    def test_caption_aws_alias_takes_priority_over_standard_name(self):
+        with patch.dict(
+            app_module.os.environ,
+            {
+                "CAPTION_AWS_ACCESS_KEY_ID": "caption-access",
+                "AWS_ACCESS_KEY_ID": "standard-access",
+            },
+        ):
+            value = app_module._first_env(
+                "CAPTION_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"
+            )
+
+        self.assertEqual(value, "caption-access")
+
     def test_signs_are_real_map_entries_with_search_and_pagination(self):
         word_map = {
             "book": "https://example.test/book.mp4",
