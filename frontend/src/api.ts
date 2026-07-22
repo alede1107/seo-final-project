@@ -1,5 +1,6 @@
 import type {
   CaptionChunk,
+  PreparedTranscript,
   PrepareStatus,
   SessionSummary,
   SignPage,
@@ -39,6 +40,20 @@ export function startPreparation(videoId: string): Promise<PrepareStatus> {
   return requestJson<PrepareStatus>("/api/prepare", {
     method: "POST",
     body: JSON.stringify({ video_id: videoId }),
+  });
+}
+
+export function startTranscriptPreparation(
+  transcript: PreparedTranscript,
+): Promise<PrepareStatus> {
+  return requestJson<PrepareStatus>("/api/prepare/transcript", {
+    method: "POST",
+    body: JSON.stringify({
+      video_id: transcript.videoId,
+      title: transcript.title,
+      duration: transcript.duration,
+      captions: transcript.captions,
+    }),
   });
 }
 

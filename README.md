@@ -20,6 +20,13 @@ Captioned YouTube videos use the fast transcript-first path. Videos without a
 usable caption track fall back to audio transcription, which is slower and can
 be affected by YouTube download restrictions in cloud environments.
 
+For the deployed companion website, keep the unpacked CaptionAid extension
+loaded. YouTube blocks transcript and media requests from many data-center IPs,
+including Vercel. The extension reads the public timed caption track from the
+user's browser and sends only the transcript and timestamps to the shared
+backend. The website stays on the same page; glossing, clip matching, playback,
+and durable history still happen through the deployed app.
+
 ## One-Time Setup
 
 Pick one environment (WSL, macOS, or Windows) and use it for both Python and
@@ -178,6 +185,9 @@ bucket. Do not add `CAPTION_STORE`; the Vercel image sets it automatically.
 6. Reload the unpacked extension. Test preparation once from the deployed
    website and once from a YouTube tab to confirm both surfaces populate the
    same History page.
+
+After reloading the extension, refresh any website or YouTube tabs that were
+already open so the updated bridge/content scripts are injected.
 
 If `/api/health` returns `503`, its `missing` list names the environment
 variables that still need to be added. After changing variables in Vercel,

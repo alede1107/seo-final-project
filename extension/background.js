@@ -4,6 +4,8 @@
 //     (for time alignment) and hands it to the offscreen doc
 //   - tells the content script to start rendering/polling captions
 
+importScripts("youtube_transcript.js");
+
 const OFFSCREEN_URL = "offscreen.html";
 
 async function hasOffscreenDocument() {
@@ -192,7 +194,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg.type === "GET_YOUTUBE_TRANSCRIPT") {
       try {
-        sendResponse(await readYouTubeTranscript(msg.tabId, msg.videoId));
+        sendResponse(await globalThis.CaptionAidYouTube.fetchTranscript(msg.videoId));
+      } catch (error) {
+        try {
+          sendResponse(await readYouTubeTranscript(msg.tabId, msg.videoId));
+        } catch (_) {
+          sendResponse({ ok: false, error: error.message });
+        }
+      }
+      return;
+    }
+
+    if (msg.type === "GET_YOUTUBE_TRANSCRIPT_REMOTE") {
+      try {
+        sendResponse(await globalThis.CaptionAidYouTube.fetchTranscript(msg.videoId));
       } catch (error) {
         sendResponse({ ok: false, error: error.message });
       }

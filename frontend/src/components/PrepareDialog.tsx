@@ -2,7 +2,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Progress from "@radix-ui/react-progress";
 import { useEffect, useRef, useState } from "react";
 
-import { getPreparation, startPreparation } from "../api";
+import { getPreparation, startPreparation, startTranscriptPreparation } from "../api";
+import { getExtensionTranscript } from "../extensionBridge";
 import { parseYouTubeId } from "../utils";
 import { useBackendStatus } from "./Layout";
 
@@ -15,6 +16,8 @@ type Phase = "idle" | "requesting" | "preparing" | "error";
 function stageLabel(stage?: string) {
   return {
     fetching_audio: "Reading YouTube transcript",
+    reading_transcript: "Reading YouTube transcript",
+    uploading_transcript: "Sending transcript",
     transcribing: "Transcribing audio",
     matching_signs: "Building ASL gloss and signs",
     ready: "Captions ready",
@@ -117,7 +120,31 @@ export default function PrepareDialog({ onPrepared }: PrepareDialogProps) {
     setPhase("requesting");
 
     try {
-      const status = await startPreparation(parsedId);
+      let status;
+      let extensionError: unknown = null;
+      try {
+        setStage("reading_transcript");
+        const transcript = await getExtensionTranscript(parsedId);
+        setProgress(45);
+        setStage("uploading_transcript");
+        status = await startTranscriptPreparation(transcript);
+      } catch (bridgeError) {
+        extensionError = bridgeError;
+        setStage("fetching_audio");
+        try {
+          status = await startPreparation(parsedId);
+        } catch (serverError) {
+          const bridgeMessage = extensionError instanceof Error
+            ? extensionError.message
+            : "CaptionAid extension is unavailable";
+          const serverMessage = serverError instanceof Error
+            ? serverError.message
+            : "The server could not load this video";
+          throw new Error(
+            `${bridgeMessage}. Reload the extension and refresh this page. ${serverMessage}`,
+          );
+        }
+      }
       if (status.status === "ready") {
         setProgress(100);
         setPhase("idle");
