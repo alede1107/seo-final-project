@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 import boto3
+import requests
 import yt_dlp
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
@@ -299,11 +300,7 @@ def _download_audio(video_id):
     S3 after). Raises on failure (caller maps to 502)."""
     tmpdir = tempfile.mkdtemp(prefix="captionaid-")
     outtmpl = os.path.join(tmpdir, "%(id)s.%(ext)s")
-    js_runtimes = {}
-    for runtime, executable in (("deno", "deno"), ("node", "node"), ("quickjs", "qjs")):
-        path = shutil.which(executable)
-        if path:
-            js_runtimes[runtime] = {"path": path}
+    js_runtimes = _youtube_js_runtimes()
 
     if not js_runtimes:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -323,6 +320,7 @@ def _download_audio(video_id):
         "retries": 3,
         "socket_timeout": 30,
         "js_runtimes": js_runtimes,
+        "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
     }
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
@@ -346,6 +344,120 @@ def _download_audio(video_id):
     except Exception:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise
+
+
+def _youtube_js_runtimes():
+    runtimes = {}
+    for runtime, executable in (("deno", "deno"), ("node", "node"), ("quickjs", "qjs")):
+        path = shutil.which(executable)
+        if path:
+            runtimes[runtime] = {"path": path}
+    return runtimes
+
+
+def _english_caption_formats(info):
+    """Return the best English YouTube caption format list, preferring manual captions."""
+    for source_name in ("subtitles", "automatic_captions"):
+        tracks = info.get(source_name) or {}
+        language = next(
+            (key for key in tracks if str(key).lower() == "en"),
+            None,
+        )
+        if language is None:
+            language = next(
+                (key for key in tracks if str(key).lower().startswith("en-")),
+                None,
+            )
+        if language is not None and tracks.get(language):
+            return tracks[language], source_name
+    return [], None
+
+
+def _json3_caption_cues(payload):
+    raw_cues = []
+    for event in payload.get("events") or []:
+        segments = event.get("segs")
+        if not isinstance(segments, list) or not segments:
+            continue
+        try:
+            start = round(float(event.get("tStartMs")) / 1000, 3)
+        except (TypeError, ValueError):
+            continue
+
+        text = "".join(str(segment.get("utf8") or "") for segment in segments)
+        text = re.sub(r"[\u200b\u200e\u200f]", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            continue
+
+        try:
+            duration = round(float(event.get("dDurationMs")) / 1000, 3)
+        except (TypeError, ValueError):
+            duration = 0
+        raw_cues.append({"start": start, "duration": duration, "text": text})
+
+    cues = []
+    for index, cue in enumerate(raw_cues):
+        next_start = raw_cues[index + 1]["start"] if index + 1 < len(raw_cues) else None
+        end = round(cue["start"] + cue["duration"], 3)
+        if not math.isfinite(end) or end <= cue["start"]:
+            end = next_start if next_start is not None and next_start > cue["start"] else cue["start"] + 2
+        cues.append({"start": cue["start"], "end": end, "text": cue["text"]})
+    return cues
+
+
+def _download_youtube_captions(video_id):
+    """Resolve and download an English timed-caption track without downloading media."""
+    options = {
+        "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "extractor_retries": 3,
+        "retries": 3,
+        "socket_timeout": 30,
+        "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
+    }
+    js_runtimes = _youtube_js_runtimes()
+    if js_runtimes:
+        options["js_runtimes"] = js_runtimes
+
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    formats, source = _english_caption_formats(info)
+    track = next((item for item in formats if item.get("ext") == "json3"), None)
+    if track is None:
+        return None
+
+    response = requests.get(
+        track["url"],
+        headers=info.get("http_headers") or {},
+        timeout=30,
+    )
+    response.raise_for_status()
+    if not response.content.strip():
+        raise RuntimeError("YouTube returned an empty caption track")
+
+    cues = _json3_caption_cues(response.json())
+    if not cues:
+        raise RuntimeError("YouTube returned a caption track with no transcript text")
+
+    duration = info.get("duration")
+    try:
+        duration = float(duration)
+    except (TypeError, ValueError):
+        duration = cues[-1]["end"]
+    if not math.isfinite(duration) or duration <= 0:
+        duration = cues[-1]["end"]
+
+    return {
+        "captions": cues,
+        "title": re.sub(r"\s+", " ", str(info.get("title") or "")).strip()[:300] or None,
+        "duration": max(duration, cues[-1]["end"]),
+        "caption_source": source,
+    }
 
 
 def _audio_content_type(ext):
@@ -398,9 +510,12 @@ def _caption_track_payload(body):
 @app.route("/prepare", methods=["POST"])
 @app.route("/api/prepare", methods=["POST"])
 def prepare():
-    """Kick off whole-video transcription so captions are ready before playback.
-    Downloads the audio (yt-dlp), stores the source in S3, and hands a pre-signed
-    URL to the pipeline. Idempotent: a ready video returns immediately."""
+    """Prepare a complete video transcript, sign queue, and durable history job.
+
+    YouTube's timed captions are preferred because they are faster and avoid a
+    large media download. Videos without usable captions retain the existing
+    audio-download and AssemblyAI transcription path.
+    """
     body = request.get_json(silent=True) or {}
     try:
         video_id = _validate(body.get("video_id", ""), "video_id")
@@ -417,9 +532,10 @@ def prepare():
     except (BotoCoreError, ClientError) as e:
         app.logger.error("caption store read failed: %s", e)
         return jsonify({"error": "caption store unavailable"}), 503
-    if status["status"] == "ready":
+    live_only = status.get("source") == "extension"
+    if status["status"] == "ready" and not live_only:
         return jsonify({"status": "ready", "cached": True}), 200
-    if status["status"] == "preparing":
+    if status["status"] == "preparing" and not live_only:
         return jsonify({"status": "preparing"}), 202
 
     # Mock mode: skip the download + S3 entirely; the pipeline fabricates ready
@@ -427,6 +543,46 @@ def prepare():
     if not pipeline.ASSEMBLYAI_KEY and not CLOUD_STORE_ENABLED:
         pipeline.prepare_async(video_id, None)
         return jsonify({"status": "preparing"}), 202
+
+    try:
+        caption_track = _download_youtube_captions(video_id)
+    except Exception as exc:  # noqa: BLE001 - yt-dlp and timedtext errors vary.
+        caption_track = None
+        app.logger.warning(
+            "YouTube caption track unavailable for %s; trying audio transcription: %s",
+            video_id,
+            exc,
+        )
+
+    if caption_track is not None:
+        try:
+            segments = _caption_track_payload(caption_track)
+            if cloud_store is not None:
+                prepared = cloud_store.submit_segments(
+                    video_id,
+                    segments,
+                    title=caption_track.get("title"),
+                    duration=caption_track.get("duration"),
+                )
+            else:
+                pipeline.prepare_segments_async(
+                    video_id,
+                    segments,
+                    title=caption_track.get("title"),
+                    duration=caption_track.get("duration"),
+                )
+                prepared = {
+                    "video_id": video_id,
+                    "status": "preparing",
+                    "stage": "matching_signs",
+                    "progress": 65,
+                    "source": "youtube_captions",
+                }
+            prepared["segment_count"] = len(segments)
+            return jsonify(prepared), 202
+        except (BotoCoreError, ClientError) as exc:
+            app.logger.error("caption transcript store failed: %s", exc)
+            return jsonify({"error": "caption store unavailable"}), 503
 
     if not S3_BUCKET:
         return jsonify({"error": "server misconfigured: S3_BUCKET not set"}), 500

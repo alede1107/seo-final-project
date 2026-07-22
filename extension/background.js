@@ -4,6 +4,8 @@
 //     (for time alignment) and hands it to the offscreen doc
 //   - tells the content script to start rendering/polling captions
 
+importScripts("youtube_transcript.js");
+
 const OFFSCREEN_URL = "offscreen.html";
 
 async function hasOffscreenDocument() {
@@ -109,13 +111,16 @@ async function readYouTubeTranscript(tabId, expectedVideoId) {
         };
       }
 
-      const trackUrl = new URL(track.baseUrl, window.location.href);
-      trackUrl.searchParams.set("fmt", "json3");
-      if (translated) trackUrl.searchParams.set("tlang", "en");
+      // Keep YouTube's signed query string byte-for-byte intact. Rebuilding it
+      // through URLSearchParams can make a valid timedtext URL return an empty
+      // body even though the video has captions.
+      let trackUrl = track.baseUrl;
+      if (!/[?&]fmt=/.test(trackUrl)) trackUrl += `${trackUrl.includes("?") ? "&" : "?"}fmt=json3`;
+      if (translated && !/[?&]tlang=/.test(trackUrl)) trackUrl += "&tlang=en";
 
       let timedText;
       try {
-        const response = await fetch(trackUrl.href, {
+        const response = await fetch(trackUrl, {
           credentials: "include",
           cache: "no-store",
         });
@@ -189,7 +194,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg.type === "GET_YOUTUBE_TRANSCRIPT") {
       try {
-        sendResponse(await readYouTubeTranscript(msg.tabId, msg.videoId));
+        sendResponse(await globalThis.CaptionAidYouTube.fetchTranscript(msg.videoId));
+      } catch (error) {
+        try {
+          sendResponse(await readYouTubeTranscript(msg.tabId, msg.videoId));
+        } catch (_) {
+          sendResponse({ ok: false, error: error.message });
+        }
+      }
+      return;
+    }
+
+    if (msg.type === "GET_YOUTUBE_TRANSCRIPT_REMOTE") {
+      try {
+        sendResponse(await globalThis.CaptionAidYouTube.fetchTranscript(msg.videoId));
       } catch (error) {
         sendResponse({ ok: false, error: error.message });
       }

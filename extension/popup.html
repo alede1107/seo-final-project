@@ -22,8 +22,9 @@
       font-weight: 600;
       cursor: pointer;
     }
-    #start { background: #2ea043; color: white; }
-    #stop { background: #da3633; color: white; margin-top: 8px; }
+    #prepare { background: #1f6feb; color: white; }
+    #show { background: #2ea043; color: white; margin-top: 8px; }
+    #hide { background: #da3633; color: white; margin-top: 8px; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     #status { font-size: 12px; margin-top: 12px; color: #8a8f98; min-height: 16px; }
     #progress { margin-top: 12px; }
@@ -40,8 +41,9 @@
 <body>
   <h1>CaptionAid</h1>
   <p id="video-id">No YouTube video detected</p>
-  <button id="start" disabled>Prepare captions</button>
-  <button id="stop" disabled>Stop CaptionAid</button>
+  <button id="prepare" disabled>Prepare captions</button>
+  <button id="show" disabled>Show captions</button>
+  <button id="hide" disabled>Hide captions</button>
   <div id="progress" hidden>
     <div class="progress-meta"><span id="progress-stage">Preparing transcript</span><span id="progress-percent">0%</span></div>
     <div id="progress-track" class="progress-track" role="progressbar" aria-label="Caption preparation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">

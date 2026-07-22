@@ -189,6 +189,11 @@ export default function HistoryPage() {
     setRefreshKey((current) => current + 1);
   };
 
+  const prepared = (videoId: string) => {
+    setSearchParams({ video: videoId });
+    setRefreshKey((current) => current + 1);
+  };
+
   return (
     <div className="hairline-grid min-h-screen px-3 py-5 sm:px-5 lg:px-7 lg:py-6">
       <div className="mx-auto max-w-[1600px]">
@@ -200,7 +205,7 @@ export default function HistoryPage() {
               Review prepared captions, ASL gloss, and the vocabulary clips available for each line.
             </p>
           </div>
-          <PrepareDialog />
+          <PrepareDialog onPrepared={prepared} />
         </header>
 
         <section className="mb-4 grid grid-cols-3 border border-white/10 bg-neutral-950/70" aria-label="History summary">
@@ -348,14 +353,6 @@ export default function HistoryPage() {
                       title={selected.title}
                       onDeleted={deleted}
                     />
-                    <a
-                      className="focus-ring rounded-md border border-white/10 px-3 py-2 text-xs font-bold text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
-                      href={`https://www.youtube.com/watch?v=${selected.video_id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open YouTube
-                    </a>
                   </div>
                 </div>
 

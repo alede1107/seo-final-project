@@ -34,6 +34,24 @@ export interface PrepareStatus {
   duration?: number | null;
   created_at?: number;
   cached?: boolean;
+  stage?: string;
+  progress?: number;
+  source?: string;
+}
+
+export interface TimedCaption {
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface PreparedTranscript {
+  ok: boolean;
+  videoId: string;
+  title: string;
+  duration: number;
+  captions: TimedCaption[];
+  error?: string;
 }
 
 export interface SessionSummary {
