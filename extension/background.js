@@ -43,8 +43,159 @@ async function getVideoTime(tabId) {
   }
 }
 
+async function readYouTubeTranscript(tabId, expectedVideoId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    args: [expectedVideoId],
+    func: async (videoId) => {
+      const sleep = (milliseconds) =>
+        new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+      let playerResponse = null;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const player = document.getElementById("movie_player");
+        let candidate = null;
+        try {
+          candidate = player?.getPlayerResponse?.() || window.ytInitialPlayerResponse;
+          if (typeof candidate === "string") candidate = JSON.parse(candidate);
+        } catch (_) {
+          candidate = null;
+        }
+
+        if (candidate?.videoDetails?.videoId === videoId) {
+          playerResponse = candidate;
+          break;
+        }
+        await sleep(250);
+      }
+
+      if (!playerResponse) {
+        return {
+          ok: false,
+          error: "YouTube has not finished loading this video. Wait a moment and try again.",
+        };
+      }
+
+      document.querySelector("video")?.pause();
+      const trackList =
+        playerResponse.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+      if (!trackList.length) {
+        return {
+          ok: false,
+          error: "This video has no YouTube caption track to prepare.",
+        };
+      }
+
+      const trackName = (track) =>
+        track?.name?.simpleText ||
+        (track?.name?.runs || []).map((run) => run.text || "").join("") ||
+        track?.languageCode ||
+        "captions";
+      const englishTracks = trackList.filter((track) =>
+        String(track.languageCode || "").toLowerCase().startsWith("en"),
+      );
+      let translated = false;
+      let track =
+        englishTracks.find((candidate) => candidate.kind !== "asr") || englishTracks[0];
+      if (!track) {
+        track = trackList.find((candidate) => candidate.isTranslatable);
+        translated = Boolean(track);
+      }
+      if (!track?.baseUrl) {
+        return {
+          ok: false,
+          error: "This video does not have an English caption track CaptionAid can prepare.",
+        };
+      }
+
+      const trackUrl = new URL(track.baseUrl, window.location.href);
+      trackUrl.searchParams.set("fmt", "json3");
+      if (translated) trackUrl.searchParams.set("tlang", "en");
+
+      let timedText;
+      try {
+        const response = await fetch(trackUrl.href, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error(`YouTube returned ${response.status}`);
+        const body = await response.text();
+        if (!body.trim()) throw new Error("YouTube returned an empty caption track");
+        timedText = JSON.parse(body);
+      } catch (error) {
+        return {
+          ok: false,
+          error: `YouTube captions could not be read: ${error.message}`,
+        };
+      }
+
+      const rawCues = (timedText.events || [])
+        .filter((event) => Array.isArray(event.segs) && event.segs.length)
+        .map((event) => ({
+          start: Number(event.tStartMs) / 1000,
+          duration: Number(event.dDurationMs) / 1000,
+          text: event.segs
+            .map((segment) => segment.utf8 || "")
+            .join("")
+            .replace(/[\u200b\u200e\u200f]/g, "")
+            .replace(/\s+/g, " ")
+            .trim(),
+        }))
+        .filter((cue) => Number.isFinite(cue.start) && cue.start >= 0 && cue.text);
+
+      const captions = rawCues.map((cue, index) => {
+        const nextStart = rawCues[index + 1]?.start;
+        let end = cue.start + cue.duration;
+        if (!Number.isFinite(end) || end <= cue.start) {
+          end = Number.isFinite(nextStart) && nextStart > cue.start
+            ? nextStart
+            : cue.start + 2;
+        }
+        return { start: cue.start, end, text: cue.text };
+      });
+
+      if (!captions.length) {
+        return {
+          ok: false,
+          error: "YouTube returned a caption track with no transcript text.",
+        };
+      }
+
+      const pageVideo = document.querySelector("video");
+      const reportedDuration = Number(playerResponse.videoDetails?.lengthSeconds);
+      const duration = Number.isFinite(reportedDuration) && reportedDuration > 0
+        ? reportedDuration
+        : Number(pageVideo?.duration) || captions[captions.length - 1].end;
+
+      return {
+        ok: true,
+        videoId,
+        title: playerResponse.videoDetails?.title || document.title,
+        duration,
+        language: translated ? "English (translated)" : trackName(track),
+        captions,
+      };
+    },
+  });
+
+  return results[0]?.result || {
+    ok: false,
+    error: "CaptionAid could not access this YouTube tab.",
+  };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
+    if (msg.type === "GET_YOUTUBE_TRANSCRIPT") {
+      try {
+        sendResponse(await readYouTubeTranscript(msg.tabId, msg.videoId));
+      } catch (error) {
+        sendResponse({ ok: false, error: error.message });
+      }
+      return;
+    }
+
     if (msg.type === "START_CAPTURE") {
       await ensureContentScript(msg.tabId);
 
@@ -100,6 +251,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       // Keep the content script polling so the last uploaded chunk can finish
       // in AssemblyAI and appear after recording stops.
+      sendResponse({ ok: true });
+    }
+
+    if (msg.type === "STOP_CAPTIONS") {
+      const { tabId } = await chrome.storage.session.get("tabId");
+      if (tabId) {
+        chrome.tabs.sendMessage(tabId, { type: "CAPTIONS_STOP" }).catch(() => {});
+      }
       sendResponse({ ok: true });
     }
 

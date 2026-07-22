@@ -1,10 +1,11 @@
 # CaptionAid
 
-CaptionAid is a Chrome/Edge extension backed by Flask. The extension captures
-audio from the YouTube tab, AssemblyAI transcribes each segment with speaker
-labels, and the backend converts it to ASL gloss and matches clips from
-`word_to_url.json`. Captions and sign clips appear in the YouTube overlay and in
-the companion website's shared history.
+CaptionAid is a Chrome/Edge extension backed by Flask. Its prepared mode reads
+the complete timed caption track from a YouTube tab, then the backend converts
+the transcript to ASL gloss and matches clips from `word_to_url.json`. Captions
+and sign clips appear in the YouTube overlay and in the companion website's
+shared history. The existing AssemblyAI audio adapter remains available for
+audio sources that require transcription and speaker labels.
 
 ## Prerequisites
 
@@ -15,8 +16,9 @@ the companion website's shared history.
 - Gemini API key is optional. Without it, the backend uses its deterministic
   fallback glossing logic.
 
-The extension records browser-supported WebM/Opus audio chunks. FFmpeg and
-server-side YouTube downloads are not required for the main workflow.
+Prepared mode requires a YouTube video with an available caption track. FFmpeg,
+server-side YouTube downloads, and live audio capture are not required for this
+main workflow.
 
 ## One-Time Setup
 
@@ -110,7 +112,7 @@ The website stays focused on two real workflows:
 
 - `/` reviews caption history, captions, ASL gloss, and matched clips. **Open
   YouTube video** accepts a YouTube URL and opens the tab where the extension
-  captures audio.
+  prepares the timed transcript.
 - `/signs` searches and plays entries from the complete `word_to_url.json`
   vocabulary.
 
@@ -187,15 +189,16 @@ redeploy so the new values reach the running app.
 3. Choose **Load unpacked** and select the repository's `extension` folder.
 4. After any extension code change, press **Reload** on the extension card and
    refresh the YouTube tab.
-5. Open a public YouTube video and start playing it.
-6. Open CaptionAid and press **Prepare captions**. The overlay appears and
-   fills with captions and sign clips as each audio segment finishes.
-7. Press **Stop CaptionAid** when finished. Keep the YouTube tab open for a few
-   seconds so the final caption can appear.
+5. Open a public YouTube video that has English captions.
+6. Open CaptionAid and press **Prepare captions**. CaptionAid pauses the video,
+   reads the complete timed transcript, and builds all gloss/sign matches.
+7. Wait for the popup to say the captions are ready, then press play. Press
+   **Stop CaptionAid** when finished.
 
-The extension automatically uses `http://localhost:5001` when a local backend
-is running. Otherwise it uses `https://seo-final-project.vercel.app`, so the
-same unpacked extension works for local development and the deployed demo.
+The extension uses `https://seo-final-project.vercel.app` by default so its
+captions always appear in the deployed companion website. For local extension
+development, set `captionAidBackend` in `chrome.storage.local` to
+`http://localhost:5001`; clear that override before the deployed demo.
 
 ## Verify
 
@@ -214,7 +217,9 @@ curl http://127.0.0.1:5001/captions/video/VIDEO_ID
 curl http://127.0.0.1:5001/api/sessions
 ```
 
-A successful caption chunk has `status: "ready"`, transcript text, an optional
-`speaker_label`, non-empty `gloss`, and non-empty `clips` when vocabulary words
-match. YouTube media is captured by the browser extension instead of downloaded
-from a cloud server, avoiding YouTube's Vercel bot-check failure.
+A successful caption chunk has `status: "ready"`, transcript text, non-empty
+`gloss`, and non-empty `clips` when vocabulary words match. Prepared YouTube
+caption tracks do not include reliable speaker labels; the AssemblyAI audio
+adapter is the path that supplies diarization. The transcript is read inside
+the user's YouTube tab instead of downloading media from a cloud server,
+avoiding YouTube's Vercel bot-check failure.

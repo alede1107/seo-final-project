@@ -403,6 +403,7 @@ if (!window.__captionAidLoaded) {
     if (clipTimer) clearInterval(clipTimer);
     clipTimer = null;
     if (ui && !ui.clipVid.paused) ui.clipVid.pause();
+    if (ui) setOverlayVisible(false);
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

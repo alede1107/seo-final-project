@@ -192,6 +192,49 @@ class CompanionApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"status": "ready", "cached": True})
 
+    def test_caption_track_prepare_starts_cloud_sign_matching(self):
+        cloud = MagicMock()
+        cloud.submit_segments.return_value = {
+            "video_id": "abc123",
+            "status": "preparing",
+            "stage": "matching_signs",
+            "progress": 65,
+            "source": "youtube_captions",
+        }
+        body = {
+            "video_id": "abc123",
+            "title": "Test video - YouTube",
+            "duration": 12,
+            "captions": [
+                {"start": 0, "end": 4, "text": "hello everyone"},
+                {"start": 11, "end": 12, "text": "book"},
+            ],
+        }
+
+        with (
+            patch.object(app_module, "CLOUD_STORE_ENABLED", True),
+            patch.object(app_module, "cloud_store", cloud),
+        ):
+            response = self.client.post("/api/prepare/transcript", json=body)
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.get_json()
+        self.assertEqual(payload["source"], "youtube_captions")
+        self.assertEqual(payload["segment_count"], 2)
+        submitted = cloud.submit_segments.call_args
+        self.assertEqual(submitted.args[0], "abc123")
+        self.assertEqual([item["text"] for item in submitted.args[1]], ["hello everyone", "book"])
+        self.assertEqual(submitted.kwargs["title"], "Test video - YouTube")
+
+    def test_caption_track_prepare_rejects_missing_transcript(self):
+        response = self.client.post(
+            "/api/prepare/transcript",
+            json={"video_id": "abc123", "captions": []},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json(), {"error": "captions must be a non-empty list"})
+
     def test_cloud_upload_submits_durable_extension_chunk(self):
         cloud = MagicMock()
         cloud.get_live_chunk.return_value = None

@@ -10,6 +10,7 @@ Env vars:
     ASSEMBLYAI_API_KEY   (optional - unset runs the pipeline in mock mode)
 """
 
+import math
 import os
 import re
 import shutil
@@ -357,6 +358,43 @@ def _audio_content_type(ext):
     }.get(ext, "application/octet-stream")
 
 
+def _caption_track_payload(body):
+    raw_cues = body.get("captions")
+    if not isinstance(raw_cues, list) or not raw_cues:
+        raise ValueError("captions must be a non-empty list")
+    if len(raw_cues) > 10_000:
+        raise ValueError("caption track is too large")
+
+    cues = []
+    total_characters = 0
+    for raw in raw_cues:
+        if not isinstance(raw, dict):
+            raise ValueError("each caption must be an object")
+        try:
+            start = float(raw.get("start"))
+            end = float(raw.get("end"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("caption times must be numbers") from exc
+        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
+            raise ValueError("caption times are invalid")
+
+        text = re.sub(r"\s+", " ", str(raw.get("text") or "")).strip()
+        if not text:
+            continue
+        total_characters += len(text)
+        if total_characters > 1_000_000:
+            raise ValueError("caption track text is too large")
+        cues.append({"start": start, "end": end, "text": text})
+
+    if not cues:
+        raise ValueError("caption track contains no transcript text")
+
+    segments = pipeline.segment_caption_cues(cues)
+    if not segments:
+        raise ValueError("caption track contains no usable segments")
+    return segments
+
+
 @app.route("/prepare", methods=["POST"])
 @app.route("/api/prepare", methods=["POST"])
 def prepare():
@@ -454,6 +492,58 @@ def prepare():
     else:
         pipeline.prepare_async(video_id, audio_url)
     return jsonify({"status": "preparing"}), 202
+
+
+@app.route("/prepare/transcript", methods=["POST"])
+@app.route("/api/prepare/transcript", methods=["POST"])
+def prepare_transcript():
+    """Prepare a complete timed transcript supplied by the browser extension."""
+    body = request.get_json(silent=True) or {}
+    try:
+        video_id = _validate(body.get("video_id", ""), "video_id")
+        segments = _caption_track_payload(body)
+        title = re.sub(r"\s+", " ", str(body.get("title") or "")).strip()[:300] or None
+        duration_value = body.get("duration")
+        duration = float(duration_value) if duration_value is not None else segments[-1]["end"]
+        if not math.isfinite(duration) or duration <= 0:
+            duration = segments[-1]["end"]
+        duration = max(duration, segments[-1]["end"])
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if CLOUD_STORE_ENABLED and cloud_store is None:
+        return jsonify(
+            {"error": "server misconfigured: cloud caption store credentials are incomplete"}
+        ), 500
+
+    try:
+        if cloud_store is not None:
+            status = cloud_store.submit_segments(
+                video_id,
+                segments,
+                title=title,
+                duration=duration,
+            )
+        else:
+            pipeline.prepare_segments_async(
+                video_id,
+                segments,
+                title=title,
+                duration=duration,
+            )
+            status = {
+                "video_id": video_id,
+                "status": "preparing",
+                "stage": "matching_signs",
+                "progress": 65,
+                "source": "youtube_captions",
+            }
+    except (BotoCoreError, ClientError) as exc:
+        app.logger.error("caption transcript store failed: %s", exc)
+        return jsonify({"error": "caption store unavailable"}), 503
+
+    status["segment_count"] = len(segments)
+    return jsonify(status), 202
 
 
 @app.route("/prepare/<video_id>", methods=["GET"])

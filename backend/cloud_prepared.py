@@ -188,6 +188,34 @@ class S3PreparedStore:
         state.setdefault("created_at", time.time())
         self._save_state(state)
 
+    def submit_segments(
+        self,
+        video_id: str,
+        segments: list[dict[str, Any]],
+        *,
+        title: str | None,
+        duration: float | None,
+    ) -> dict[str, Any]:
+        """Start a durable prepared job from browser-supplied timed captions."""
+        self._put_json(self._segments_key(video_id), segments)
+        self._put_json(self._captions_key(video_id), [])
+
+        state = {
+            "video_id": video_id,
+            "status": "preparing",
+            "stage": "matching_signs",
+            "progress": 65,
+            "error": None,
+            "title": str(title).strip()[:300] if title else None,
+            "duration": float(duration) if duration is not None else None,
+            "created_at": time.time(),
+            "source": "youtube_captions",
+            "next_segment": 0,
+            "total_segments": len(segments),
+        }
+        self._save_state(state)
+        return self._public_state(state, video_id)
+
     @staticmethod
     def _public_live_state(state: dict[str, Any]) -> dict[str, Any]:
         return {
