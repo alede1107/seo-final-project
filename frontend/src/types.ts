@@ -34,6 +34,9 @@ export interface PrepareStatus {
   duration?: number | null;
   created_at?: number;
   cached?: boolean;
+  stage?: string;
+  progress?: number;
+  source?: string;
 }
 
 export interface SessionSummary {

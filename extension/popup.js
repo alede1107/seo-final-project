@@ -1,5 +1,6 @@
-const startBtn = document.getElementById("start");
-const stopBtn = document.getElementById("stop");
+const prepareBtn = document.getElementById("prepare");
+const showBtn = document.getElementById("show");
+const hideBtn = document.getElementById("hide");
 const statusEl = document.getElementById("status");
 const videoIdEl = document.getElementById("video-id");
 const progressEl = document.getElementById("progress");
@@ -12,6 +13,7 @@ let backend = null;
 let currentTab = null;
 let videoId = null;
 let prepared = false;
+let showing = false;
 let polling = false;
 let pollTimer = null;
 let showWhenReady = false;
@@ -31,9 +33,11 @@ function cleanVideoTitle(title) {
 
 function stageLabel(stage) {
   return {
-    reading_transcript: "Reading transcript",
+    reading_transcript: "Reading YouTube transcript",
+    fetching_audio: "Reading YouTube transcript",
     uploading_transcript: "Sending transcript",
-    matching_signs: "Building gloss and signs",
+    transcribing: "Transcribing audio",
+    matching_signs: "Building ASL gloss and signs",
     ready: "Captions ready",
   }[stage] || "Preparing captions";
 }
@@ -59,59 +63,87 @@ function stopPolling() {
 
 async function showCaptions() {
   const sessionId = `view-${videoId}-${Date.now()}`;
-  await chrome.runtime.sendMessage({
+  const response = await chrome.runtime.sendMessage({
     type: "START_CAPTIONS_ONLY",
     videoId,
     sessionId,
     tabId: currentTab.id,
   });
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  statusEl.textContent = "Captions and signs are ready. Press play.";
+  if (response?.ok === false) throw new Error(response.error || "Could not show captions");
+
+  showing = true;
+  showBtn.disabled = true;
+  hideBtn.disabled = false;
+  statusEl.textContent = "Captions and signs are shown. Press play.";
   statusEl.className = "ready";
+  await chrome.storage.session.set({ captionAidShowingVideo: videoId });
+}
+
+async function hideCaptions() {
+  await chrome.runtime.sendMessage({ type: "STOP_CAPTIONS" });
+  showing = false;
+  showBtn.disabled = !prepared;
+  hideBtn.disabled = true;
+  statusEl.textContent = "Captions and signs hidden.";
+  statusEl.className = "";
+  await chrome.storage.session.remove("captionAidShowingVideo");
 }
 
 async function applyPreparedStatus(data) {
-  const isPreparedJob = data.source !== "extension";
-  if (data.status === "ready" && isPreparedJob) {
+  const completePreparation = data.source !== "extension";
+  if (data.status === "ready" && completePreparation) {
     prepared = true;
     stopPolling();
     hideProgress();
-    startBtn.disabled = false;
-    startBtn.textContent = "Show captions";
-    statusEl.textContent = "Transcript prepared.";
+    prepareBtn.disabled = true;
+    prepareBtn.textContent = "Captions prepared";
+    showBtn.disabled = showing;
+    hideBtn.disabled = !showing;
+    statusEl.textContent = showing
+      ? "Captions and signs are shown. Press play."
+      : "Transcript prepared. Select Show captions.";
     statusEl.className = "ready";
-    if (showWhenReady) {
+    if (showWhenReady && !showing) {
       showWhenReady = false;
       await showCaptions();
     }
     return;
   }
 
-  if (data.status === "preparing" && isPreparedJob) {
+  if (data.status === "preparing" && completePreparation) {
     prepared = false;
-    startBtn.disabled = true;
+    prepareBtn.disabled = true;
+    prepareBtn.textContent = "Preparing captions";
+    showBtn.disabled = true;
+    hideBtn.disabled = true;
     statusEl.textContent = "Preparing the full transcript before playback...";
     statusEl.className = "recording";
-    renderProgress(data.progress || 65, data.stage || "matching_signs");
+    renderProgress(data.progress || 55, data.stage || "matching_signs");
     return;
   }
 
   prepared = false;
   stopPolling();
   hideProgress();
-  startBtn.disabled = false;
-  startBtn.textContent = "Prepare captions";
+  prepareBtn.disabled = false;
+  prepareBtn.textContent = "Prepare captions";
+  showBtn.disabled = true;
+  hideBtn.disabled = true;
   statusEl.className = "";
-  statusEl.textContent = data.status === "error" ? `Preparation failed: ${data.error}` : "";
+  if (data.source === "extension") {
+    statusEl.textContent = "Earlier captured captions found. Prepare the complete transcript.";
+  } else {
+    statusEl.textContent = data.status === "error" ? `Preparation failed: ${data.error}` : "";
+  }
 }
 
 async function getPreparedStatus() {
   const response = await fetch(`${backend}/api/prepare/${encodeURIComponent(videoId)}`, {
     cache: "no-store",
   });
-  if (!response.ok) throw new Error("Could not check caption preparation");
-  return response.json();
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Could not check caption preparation");
+  return data;
 }
 
 async function pollPrepared() {
@@ -123,7 +155,7 @@ async function pollPrepared() {
   } catch (error) {
     statusEl.textContent = `Error: ${error.message}`;
   }
-  if (polling) pollTimer = window.setTimeout(pollPrepared, 1500);
+  if (polling) pollTimer = window.setTimeout(pollPrepared, 1200);
 }
 
 function startPolling() {
@@ -132,12 +164,51 @@ function startPolling() {
   void pollPrepared();
 }
 
+async function submitBrowserTranscript() {
+  const transcript = await chrome.runtime.sendMessage({
+    type: "GET_YOUTUBE_TRANSCRIPT",
+    videoId,
+    tabId: currentTab.id,
+  });
+  if (!transcript?.ok) throw new Error(transcript?.error || "Transcript unavailable in tab");
+  if (transcript.videoId !== videoId) throw new Error("The YouTube video changed. Try again.");
+
+  statusEl.textContent = `Found ${transcript.captions.length} timed caption lines.`;
+  renderProgress(45, "uploading_transcript");
+  const response = await fetch(`${backend}/api/prepare/transcript`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      video_id: videoId,
+      title: cleanVideoTitle(transcript.title || currentTab.title),
+      duration: transcript.duration,
+      captions: transcript.captions,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Caption transcript upload failed");
+  return data;
+}
+
+async function submitBackendPreparation() {
+  statusEl.textContent = "Resolving the complete transcript...";
+  renderProgress(25, "reading_transcript");
+  const response = await fetch(`${backend}/api/prepare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ video_id: videoId }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Caption preparation failed");
+  return data;
+}
+
 async function init() {
   [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   videoId = extractVideoId(currentTab?.url || "");
   if (!videoId) {
     videoIdEl.textContent = "Open a YouTube video first";
-    statusEl.textContent = "CaptionAid needs a YouTube video with captions.";
+    statusEl.textContent = "CaptionAid needs a YouTube video.";
     return;
   }
 
@@ -151,7 +222,9 @@ async function init() {
     return;
   }
 
-  startBtn.disabled = false;
+  const stored = await chrome.storage.session.get("captionAidShowingVideo");
+  showing = stored.captionAidShowingVideo === videoId;
+  prepareBtn.disabled = false;
   try {
     const data = await getPreparedStatus();
     await applyPreparedStatus(data);
@@ -161,70 +234,57 @@ async function init() {
   }
 }
 
-startBtn.addEventListener("click", async () => {
-  if (prepared) {
-    try {
-      await showCaptions();
-    } catch (error) {
-      startBtn.disabled = false;
-      statusEl.textContent = `Error: ${error.message}`;
-    }
-    return;
-  }
-
-  startBtn.disabled = true;
+prepareBtn.addEventListener("click", async () => {
+  prepareBtn.disabled = true;
+  showBtn.disabled = true;
+  hideBtn.disabled = true;
   showWhenReady = true;
   statusEl.className = "recording";
   statusEl.textContent = "Reading the complete YouTube transcript...";
   renderProgress(15, "reading_transcript");
 
+  let browserError = null;
   try {
-    const transcript = await chrome.runtime.sendMessage({
-      type: "GET_YOUTUBE_TRANSCRIPT",
-      videoId,
-      tabId: currentTab.id,
-    });
-    if (!transcript?.ok) throw new Error(transcript?.error || "Transcript unavailable");
-    if (transcript.videoId !== videoId) throw new Error("The YouTube video changed. Try again.");
-
-    statusEl.textContent = `Found ${transcript.captions.length} timed caption lines.`;
-    renderProgress(45, "uploading_transcript");
-    const response = await fetch(`${backend}/api/prepare/transcript`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        video_id: videoId,
-        title: cleanVideoTitle(transcript.title || currentTab.title),
-        duration: transcript.duration,
-        captions: transcript.captions,
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || "Caption preparation failed");
+    let data;
+    try {
+      data = await submitBrowserTranscript();
+    } catch (error) {
+      browserError = error;
+      data = await submitBackendPreparation();
+    }
 
     await applyPreparedStatus(data);
-    startPolling();
+    if (data.status === "preparing") startPolling();
   } catch (error) {
     showWhenReady = false;
     prepared = false;
     stopPolling();
     hideProgress();
-    startBtn.disabled = false;
-    startBtn.textContent = "Prepare captions";
+    prepareBtn.disabled = false;
+    prepareBtn.textContent = "Prepare captions";
+    showBtn.disabled = true;
+    hideBtn.disabled = true;
     statusEl.className = "";
+    const fallbackNote = browserError ? " The in-tab transcript was also unavailable." : "";
+    statusEl.textContent = `Error: ${error.message}.${fallbackNote}`.replace("..", ".");
+  }
+});
+
+showBtn.addEventListener("click", async () => {
+  try {
+    await showCaptions();
+  } catch (error) {
+    showBtn.disabled = false;
     statusEl.textContent = `Error: ${error.message}`;
   }
 });
 
-stopBtn.addEventListener("click", async () => {
-  stopBtn.disabled = true;
-  await chrome.runtime.sendMessage({ type: "STOP_CAPTURE" }).catch(() => {});
-  await chrome.runtime.sendMessage({ type: "STOP_CAPTIONS" }).catch(() => {});
-  await chrome.storage.session.set({ recording: false });
-  startBtn.disabled = false;
-  startBtn.textContent = prepared ? "Show captions" : "Prepare captions";
-  statusEl.textContent = prepared ? "Captions hidden." : "CaptionAid stopped.";
-  statusEl.className = "";
+hideBtn.addEventListener("click", async () => {
+  try {
+    await hideCaptions();
+  } catch (error) {
+    statusEl.textContent = `Error: ${error.message}`;
+  }
 });
 
 init().catch((error) => {

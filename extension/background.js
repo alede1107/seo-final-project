@@ -109,13 +109,16 @@ async function readYouTubeTranscript(tabId, expectedVideoId) {
         };
       }
 
-      const trackUrl = new URL(track.baseUrl, window.location.href);
-      trackUrl.searchParams.set("fmt", "json3");
-      if (translated) trackUrl.searchParams.set("tlang", "en");
+      // Keep YouTube's signed query string byte-for-byte intact. Rebuilding it
+      // through URLSearchParams can make a valid timedtext URL return an empty
+      // body even though the video has captions.
+      let trackUrl = track.baseUrl;
+      if (!/[?&]fmt=/.test(trackUrl)) trackUrl += `${trackUrl.includes("?") ? "&" : "?"}fmt=json3`;
+      if (translated && !/[?&]tlang=/.test(trackUrl)) trackUrl += "&tlang=en";
 
       let timedText;
       try {
-        const response = await fetch(trackUrl.href, {
+        const response = await fetch(trackUrl, {
           credentials: "include",
           cache: "no-store",
         });

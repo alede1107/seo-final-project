@@ -121,6 +121,7 @@ class PreparedCaptionTests(unittest.TestCase):
                     {"title": "Test video", "duration": 12.5},
                 ),
             ),
+            patch.object(app_module, "_download_youtube_captions", return_value=None),
             patch.object(app_module.pipeline, "set_prepare_metadata") as set_metadata,
             patch.object(app_module.pipeline, "mark_prepare_started") as mark_started,
             patch.object(app_module.pipeline, "mark_prepare_error"),
@@ -173,6 +174,7 @@ class PreparedCaptionTests(unittest.TestCase):
                 "_download_audio",
                 side_effect=RuntimeError("No supported JavaScript runtime found"),
             ),
+            patch.object(app_module, "_download_youtube_captions", return_value=None),
             patch.object(app_module.pipeline, "mark_prepare_started"),
             patch.object(app_module.pipeline, "mark_prepare_error") as mark_error,
         ):
@@ -183,6 +185,68 @@ class PreparedCaptionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertIn("No supported JavaScript runtime", response.get_json()["error"])
         mark_error.assert_called_once()
+
+    def test_prepare_prefers_timed_captions_without_downloading_audio(self):
+        caption_track = {
+            "title": "Captioned video",
+            "duration": 12,
+            "captions": [
+                {"start": 0, "end": 4, "text": "hello everyone"},
+                {"start": 10, "end": 12, "text": "open the book"},
+            ],
+        }
+
+        with (
+            patch.object(app_module, "CLOUD_STORE_ENABLED", False),
+            patch.object(app_module, "cloud_store", None),
+            patch.object(app_module.pipeline, "ASSEMBLYAI_KEY", "test-key"),
+            patch.object(
+                app_module.pipeline,
+                "get_prepared",
+                return_value={"status": "none", "error": None},
+            ),
+            patch.object(
+                app_module,
+                "_download_youtube_captions",
+                return_value=caption_track,
+            ),
+            patch.object(app_module, "_download_audio") as download_audio,
+            patch.object(app_module.pipeline, "prepare_segments_async") as prepare_segments,
+        ):
+            response = app_module.app.test_client().post(
+                "/prepare", json={"video_id": "captioned1"}
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.get_json()["source"], "youtube_captions")
+        download_audio.assert_not_called()
+        submitted = prepare_segments.call_args
+        self.assertEqual(submitted.args[0], "captioned1")
+        self.assertEqual(
+            [segment["text"] for segment in submitted.args[1]],
+            ["hello everyone", "open the book"],
+        )
+        self.assertEqual(submitted.kwargs["title"], "Captioned video")
+
+    def test_json3_caption_parser_preserves_timing_and_text(self):
+        cues = app_module._json3_caption_cues(
+            {
+                "events": [
+                    {
+                        "tStartMs": 1200,
+                        "dDurationMs": 2160,
+                        "segs": [{"utf8": "Hello\nworld"}],
+                    },
+                    {
+                        "tStartMs": 5000,
+                        "segs": [{"utf8": "book"}],
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(cues[0], {"start": 1.2, "end": 3.36, "text": "Hello world"})
+        self.assertEqual(cues[1], {"start": 5.0, "end": 7.0, "text": "book"})
 
     def test_audio_content_types_match_downloaded_containers(self):
         self.assertEqual(app_module._audio_content_type("m4a"), "audio/mp4")

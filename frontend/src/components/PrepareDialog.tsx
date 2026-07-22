@@ -1,19 +1,98 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { useState } from "react";
+import * as Progress from "@radix-ui/react-progress";
+import { useEffect, useRef, useState } from "react";
 
+import { getPreparation, startPreparation } from "../api";
 import { parseYouTubeId } from "../utils";
 import { useBackendStatus } from "./Layout";
 
-type Phase = "idle" | "opened" | "error";
+interface PrepareDialogProps {
+  onPrepared: (videoId: string) => void;
+}
 
-export default function PrepareDialog() {
+type Phase = "idle" | "requesting" | "preparing" | "error";
+
+function stageLabel(stage?: string) {
+  return {
+    fetching_audio: "Reading YouTube transcript",
+    transcribing: "Transcribing audio",
+    matching_signs: "Building ASL gloss and signs",
+    ready: "Captions ready",
+  }[stage || ""] || "Preparing captions";
+}
+
+export default function PrepareDialog({ onPrepared }: PrepareDialogProps) {
   const backend = useBackendStatus();
+  const onPreparedRef = useRef(onPrepared);
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
+  const [videoId, setVideoId] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
+  const [progress, setProgress] = useState(0);
+  const [stage, setStage] = useState("fetching_audio");
+  const [startedAt, setStartedAt] = useState(0);
   const [error, setError] = useState("");
 
+  onPreparedRef.current = onPrepared;
+  const busy = phase === "requesting" || phase === "preparing";
+
+  useEffect(() => {
+    if (!busy) return;
+    const timer = window.setInterval(() => {
+      const elapsed = Math.max(0, (Date.now() - startedAt) / 1000);
+      const estimate = phase === "requesting"
+        ? Math.min(45, 8 + elapsed * 5)
+        : Math.min(94, 55 + elapsed * 0.7);
+      setProgress((current) => Math.max(current, Math.round(estimate)));
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [busy, phase, startedAt]);
+
+  useEffect(() => {
+    if (phase !== "preparing" || !videoId) return;
+    let cancelled = false;
+    let timer = 0;
+
+    const poll = async () => {
+      try {
+        const status = await getPreparation(videoId);
+        if (cancelled) return;
+        if (status.stage) setStage(status.stage);
+        if (typeof status.progress === "number") {
+          setProgress((current) => Math.max(current, status.progress || 0));
+        }
+
+        if (status.status === "ready") {
+          setProgress(100);
+          setStage("ready");
+          setPhase("idle");
+          setOpen(false);
+          onPreparedRef.current(videoId);
+          return;
+        }
+        if (status.status === "error") {
+          setError(status.error || "Caption preparation failed.");
+          setPhase("error");
+          return;
+        }
+        timer = window.setTimeout(poll, 1200);
+      } catch (pollError) {
+        if (!cancelled) {
+          setError(pollError instanceof Error ? pollError.message : "Could not check preparation.");
+          setPhase("error");
+        }
+      }
+    };
+
+    timer = window.setTimeout(poll, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [phase, videoId]);
+
   const changeOpen = (nextOpen: boolean) => {
+    if (!nextOpen && busy) return;
     setOpen(nextOpen);
     if (!nextOpen) {
       setPhase("idle");
@@ -21,25 +100,43 @@ export default function PrepareDialog() {
     }
   };
 
-  const submit = (event: React.FormEvent<HTMLFormElement>) => {
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const videoId = parseYouTubeId(input);
-    if (!videoId) {
+    const parsedId = parseYouTubeId(input);
+    if (!parsedId) {
       setError("Use a public YouTube URL or an 11-character video ID.");
       setPhase("error");
       return;
     }
 
-    const youtubeTab = window.open(`https://www.youtube.com/watch?v=${videoId}`, "_blank");
-    if (!youtubeTab) {
-      setError("Your browser blocked the YouTube tab. Allow popups and try again.");
-      setPhase("error");
-      return;
-    }
-
-    youtubeTab.opener = null;
+    setVideoId(parsedId);
     setError("");
-    setPhase("opened");
+    setProgress(8);
+    setStage("fetching_audio");
+    setStartedAt(Date.now());
+    setPhase("requesting");
+
+    try {
+      const status = await startPreparation(parsedId);
+      if (status.status === "ready") {
+        setProgress(100);
+        setPhase("idle");
+        setOpen(false);
+        onPreparedRef.current(parsedId);
+        return;
+      }
+      if (status.status === "error") {
+        setError(status.error || "Caption preparation failed.");
+        setPhase("error");
+        return;
+      }
+      if (status.stage) setStage(status.stage);
+      if (typeof status.progress === "number") setProgress(status.progress);
+      setPhase("preparing");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not start preparation.");
+      setPhase("error");
+    }
   };
 
   return (
@@ -47,9 +144,10 @@ export default function PrepareDialog() {
       <Dialog.Trigger asChild>
         <button
           type="button"
-          className="focus-ring inline-flex h-9 items-center justify-center rounded-md bg-white px-3.5 text-sm font-extrabold tracking-tight text-black transition-colors hover:bg-neutral-200"
+          disabled={backend === "disconnected"}
+          className="focus-ring inline-flex h-9 items-center justify-center rounded-md bg-white px-3.5 text-sm font-extrabold tracking-tight text-black transition-colors hover:bg-neutral-200 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
         >
-          Open YouTube video
+          Prepare video
         </button>
       </Dialog.Trigger>
 
@@ -60,18 +158,18 @@ export default function PrepareDialog() {
             <div className="flex items-start justify-between gap-6">
               <div>
                 <Dialog.Title className="text-base font-extrabold tracking-tight">
-                  Caption a YouTube video
+                  Prepare a YouTube video
                 </Dialog.Title>
                 <Dialog.Description className="mt-1 text-sm leading-5 text-neutral-500">
-                  Open the video, then use the CaptionAid extension to prepare its full timed
-                  transcript, ASL gloss, and matched sign clips before playback.
+                  Load its transcript, build ASL gloss, and match sign clips without leaving this page.
                 </Dialog.Description>
               </div>
               <Dialog.Close asChild>
                 <button
                   type="button"
                   aria-label="Close"
-                  className="focus-ring grid size-8 shrink-0 place-items-center rounded-md border border-white/10 font-mono text-sm text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-white"
+                  disabled={busy}
+                  className="focus-ring grid size-8 shrink-0 place-items-center rounded-md border border-white/10 font-mono text-sm text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-white disabled:cursor-wait disabled:opacity-40"
                 >
                   X
                 </button>
@@ -89,30 +187,42 @@ export default function PrepareDialog() {
                 type="text"
                 inputMode="url"
                 value={input}
+                disabled={busy}
                 onChange={(event) => {
                   setInput(event.target.value);
-                  if (phase !== "idle") setPhase("idle");
+                  if (phase === "error") setPhase("idle");
                 }}
                 placeholder="https://youtube.com/watch?v=..."
                 autoComplete="off"
-                className="focus-ring h-11 w-full rounded-md border border-white/10 bg-neutral-950 px-3 text-sm text-white placeholder:text-neutral-700"
+                className="focus-ring h-11 w-full rounded-md border border-white/10 bg-neutral-950 px-3 text-sm text-white placeholder:text-neutral-700 disabled:cursor-wait disabled:text-neutral-500"
               />
             </label>
 
-            {phase === "opened" && (
-              <div className="border border-lime-400/20 bg-lime-400/5 px-3 py-3" role="status">
-                <p className="text-sm font-semibold text-lime-300">YouTube opened</p>
-                <ol className="mt-2 space-y-1 font-mono text-[11px] leading-5 text-lime-100/60">
-                  <li>1. Open CaptionAid on the YouTube tab.</li>
-                  <li>2. Press Prepare captions and wait until it is ready.</li>
-                  <li>3. Press play, or return here to review the prepared transcript.</li>
-                </ol>
+            {busy && (
+              <div className="border border-white/10 bg-neutral-950/60 p-3" role="status" aria-live="polite">
+                <div className="mb-2 flex items-center justify-between gap-4">
+                  <span className="text-sm font-semibold text-neutral-300">{stageLabel(stage)}</span>
+                  <span className="font-mono text-xs text-accent">{Math.round(progress)}%</span>
+                </div>
+                <Progress.Root
+                  value={progress}
+                  className="h-1.5 overflow-hidden rounded-full bg-neutral-800"
+                  aria-label={stageLabel(stage)}
+                >
+                  <Progress.Indicator
+                    className="h-full bg-accent transition-transform duration-500 ease-out"
+                    style={{ transform: `translateX(-${100 - progress}%)` }}
+                  />
+                </Progress.Root>
+                <p className="mt-2 font-mono text-[10px] leading-4 text-neutral-600">
+                  Keep this window open while CaptionAid prepares the full video.
+                </p>
               </div>
             )}
 
             {phase === "error" && (
               <div className="border border-red-400/20 bg-red-400/5 px-3 py-2.5" role="alert">
-                <p className="text-sm font-semibold text-red-300">Could not open this video</p>
+                <p className="text-sm font-semibold text-red-300">Could not prepare this video</p>
                 <p className="mt-1 text-xs leading-5 text-red-200/60">{error}</p>
               </div>
             )}
@@ -123,10 +233,10 @@ export default function PrepareDialog() {
               </span>
               <button
                 type="submit"
-                disabled={!input.trim() || backend !== "connected"}
+                disabled={!input.trim() || busy || backend !== "connected"}
                 className="focus-ring h-9 rounded-md bg-white px-4 text-sm font-extrabold text-black transition-colors hover:bg-neutral-200 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
               >
-                Open on YouTube
+                {busy ? "Preparing..." : "Start preparation"}
               </button>
             </div>
           </form>
