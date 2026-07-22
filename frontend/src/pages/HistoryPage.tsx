@@ -55,6 +55,16 @@ export default function HistoryPage() {
     return () => controller.abort();
   }, [refreshKey]);
 
+  useEffect(() => {
+    const refresh = () => setRefreshKey((current) => current + 1);
+    const timer = window.setInterval(refresh, 5000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, []);
+
   const selected = useMemo(
     () =>
       sessions.find((session) => session.video_id === requestedVideo) ||
@@ -159,11 +169,6 @@ export default function HistoryPage() {
     }
   };
 
-  const prepared = (videoId: string) => {
-    setSearchParams({ video: videoId });
-    setRefreshKey((current) => current + 1);
-  };
-
   const deleted = (videoId: string) => {
     setSessions((current) => current.filter((session) => session.video_id !== videoId));
     setChunks([]);
@@ -182,7 +187,7 @@ export default function HistoryPage() {
               Review prepared captions, ASL gloss, and the vocabulary clips available for each line.
             </p>
           </div>
-          <PrepareDialog onPrepared={prepared} />
+          <PrepareDialog />
         </header>
 
         <section className="mb-4 grid grid-cols-3 border border-white/10 bg-neutral-950/70" aria-label="History summary">

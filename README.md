@@ -1,23 +1,22 @@
 # CaptionAid
 
-CaptionAid is a Chrome/Edge extension backed by Flask. It prepares captions for
-a public YouTube video, converts each transcript segment to ASL gloss, matches
-the gloss against `word_to_url.json`, and plays the matched clips in an overlay
-that follows the YouTube playhead.
+CaptionAid is a Chrome/Edge extension backed by Flask. The extension captures
+audio from the YouTube tab, AssemblyAI transcribes each segment with speaker
+labels, and the backend converts it to ASL gloss and matches clips from
+`word_to_url.json`. Captions and sign clips appear in the YouTube overlay and in
+the companion website's shared history.
 
 ## Prerequisites
 
-- Python 3.11 or newer is recommended. Python 3.10 still runs today, but current
-  yt-dlp releases warn that support will be removed soon.
-- Node.js 22+ or Deno 2.3+ must be available in the same terminal that runs the
-  backend. yt-dlp now requires a JavaScript runtime for reliable YouTube access.
+- Python 3.11 or newer is recommended.
+- Node.js 22+ for the React companion website.
 - AWS credentials with access to the configured S3 bucket.
 - AssemblyAI API key.
 - Gemini API key is optional. Without it, the backend uses its deterministic
   fallback glossing logic.
 
-The prepared-caption path does not require FFmpeg. It uploads the audio format
-provided by YouTube directly to S3.
+The extension records browser-supported WebM/Opus audio chunks. FFmpeg and
+server-side YouTube downloads are not required for the main workflow.
 
 ## One-Time Setup
 
@@ -51,11 +50,10 @@ npm ci --include=optional
 cd ..
 ```
 
-Confirm the JavaScript runtime is visible. One of these must succeed:
+Confirm Node is visible:
 
 ```bash
 node --version
-deno --version
 ```
 
 ## Environment
@@ -97,9 +95,8 @@ The response should be `{"ok":true}`.
 
 ## Run The Companion Website
 
-The React companion website is separate from the browser extension, but both
-use the same Flask API and caption database. Keep the backend running, then use
-a second terminal in the same environment:
+The React companion website and browser extension use the same Flask API and
+caption records. Keep the backend running, then use a second terminal:
 
 ```bash
 cd frontend
@@ -111,17 +108,17 @@ backend at `http://127.0.0.1:5001`.
 
 The website stays focused on two real workflows:
 
-- `/` reviews preparation history, captions, ASL gloss, and matched clips. The
-  **Prepare video** button accepts a public YouTube URL.
+- `/` reviews caption history, captions, ASL gloss, and matched clips. **Open
+  YouTube video** accepts a YouTube URL and opens the tab where the extension
+  captures audio.
 - `/signs` searches and plays entries from the complete `word_to_url.json`
   vocabulary.
 
-Deleting a History item removes its prepared transcript and matched clips from
-the local database. It does not delete live-capture sessions. In the deployed
-S3-backed app it also removes that video's stored source audio and job files.
+Deleting a History item removes its transcript and matched clips. In the
+deployed S3-backed app it also removes that video's captured audio and job
+files.
 
-The browser extension remains the third user-facing surface and uses the same
-backend and caption records.
+The History page refreshes automatically while the extension processes a video.
 
 For a production-style local build, compile the frontend first and then start
 Flask. Flask serves the built site and API from the same port:
@@ -140,12 +137,12 @@ Then open `http://127.0.0.1:5001`.
 
 The repository includes `Dockerfile.vercel`, so the companion website and
 Flask API deploy together as one Vercel project and share one URL. The image
-builds the React site, includes Node 22 for yt-dlp, runs Python 3.12, and serves
-the production build through Gunicorn.
+builds the React site, runs Python 3.12, and serves the production build through
+Gunicorn.
 
-Production does not use SQLite for prepared videos. Vercel instances are
-temporary, so preparation jobs and caption results are stored in the existing
-S3 bucket under `captionaid/v2/`. No additional database is required.
+Production does not use SQLite for extension captions. Vercel instances are
+temporary, so every AssemblyAI chunk job and caption result is stored in the
+existing S3 bucket under `captionaid/v2/`. No additional database is required.
 
 1. Push this branch to the repository hosted on GitHub.
 2. In Vercel, choose **Add New > Project** and import the repository.
@@ -156,23 +153,28 @@ S3 bucket under `captionaid/v2/`. No additional database is required.
 4. Add these environment variables for Production and Preview:
 
 ```dotenv
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
+CAPTION_AWS_ACCESS_KEY_ID=...
+CAPTION_AWS_SECRET_ACCESS_KEY=...
 AWS_REGION=us-east-2
 S3_BUCKET=...
 ASSEMBLYAI_API_KEY=...
 GEMINI_API_KEY=...
 ```
 
+The `CAPTION_AWS_*` values are the same IAM access key ID and secret normally
+stored locally as `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. The aliases
+avoid collisions with platform-managed AWS variables inside Vercel containers;
+the standard names remain supported for local development.
+
 `GEMINI_API_KEY` is optional. The AWS identity needs `s3:GetObject`,
 `s3:PutObject`, `s3:DeleteObject`, and `s3:ListBucket` access to the configured
 bucket. Do not add `CAPTION_STORE`; the Vercel image sets it automatically.
 
 5. Press **Deploy**. After the deployment is ready, open `/api/health` on its
-   URL. A correctly configured deployment responds with `{"ok":true}`.
-6. Open the deployment URL, prepare a short public YouTube video, and leave the
-   preparation dialog open until it finishes. The browser polls the API, which
-   safely resumes transcription and sign matching across Vercel invocations.
+   URL. A correctly configured deployment responds with `{"ok":true}` after
+   verifying real access to the S3 bucket.
+6. Reload the unpacked extension, open the deployed website, enter a YouTube
+   URL, and follow the three steps shown in the dialog.
 
 If `/api/health` returns `503`, its `missing` list names the environment
 variables that still need to be added. After changing variables in Vercel,
@@ -185,8 +187,15 @@ redeploy so the new values reach the running app.
 3. Choose **Load unpacked** and select the repository's `extension` folder.
 4. After any extension code change, press **Reload** on the extension card and
    refresh the YouTube tab.
-5. Open a public YouTube video, open CaptionAid, and press **Prepare captions**.
-6. Wait for **Captions ready**, then press **Show captions** and play the video.
+5. Open a public YouTube video and start playing it.
+6. Open CaptionAid and press **Prepare captions**. The overlay appears and
+   fills with captions and sign clips as each audio segment finishes.
+7. Press **Stop CaptionAid** when finished. Keep the YouTube tab open for a few
+   seconds so the final caption can appear.
+
+The extension automatically uses `http://localhost:5001` when a local backend
+is running. Otherwise it uses `https://seo-final-project.vercel.app`, so the
+same unpacked extension works for local development and the deployed demo.
 
 ## Verify
 
@@ -198,26 +207,14 @@ python backend/verify_pipeline.py
 cd frontend && npm run build
 ```
 
-For a full prepared-caption test, use the extension and then inspect the result:
+For a full caption test, use the extension and then inspect the result:
 
 ```bash
-curl http://127.0.0.1:5001/prepare/VIDEO_ID
 curl http://127.0.0.1:5001/captions/video/VIDEO_ID
+curl http://127.0.0.1:5001/api/sessions
 ```
 
-A successful result has `status: "ready"`; caption chunks should include
-non-empty `gloss` and, when vocabulary words match, non-empty `clips`.
-
-## YouTube Download Errors
-
-If the backend reports HTTP 403, first verify that the backend terminal can see
-Node 22+ or Deno 2.3+, then reinstall the project dependencies:
-
-```bash
-node --version
-python -m pip install --upgrade --force-reinstall -r requirements.txt
-```
-
-CaptionAid can prepare ordinary public videos. Private, members-only,
-age-restricted, region-blocked, or bot-challenged videos may still require
-authentication and are outside the MVP's guaranteed path.
+A successful caption chunk has `status: "ready"`, transcript text, an optional
+`speaker_label`, non-empty `gloss`, and non-empty `clips` when vocabulary words
+match. YouTube media is captured by the browser extension instead of downloaded
+from a cloud server, avoiding YouTube's Vercel bot-check failure.

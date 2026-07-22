@@ -6,7 +6,6 @@
 //      headerless and unplayable as standalone files).
 //   4. POSTs each chunk to the Flask backend.
 
-const BACKEND_URL = "http://localhost:5001/upload";
 const CHUNK_MS = 10000; // 10-second chunks
 
 let mediaStream = null;
@@ -16,6 +15,7 @@ let stopping = false;
 let chunkIndex = 0;
 let sessionId = null;
 let videoId = null;
+let videoTitle = null;
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== "offscreen") return;
@@ -36,10 +36,11 @@ async function sampleVideoTime() {
   }
 }
 
-async function startCapture({ streamId, videoId: vid, sessionId: sid }) {
+async function startCapture({ streamId, videoId: vid, videoTitle: title, sessionId: sid }) {
   if (mediaStream) return; // already running
 
   videoId = vid || "unknown";
+  videoTitle = title || null;
   sessionId = sid || `${videoId}-${Date.now()}`;
   chunkIndex = 0;
   stopping = false;
@@ -85,7 +86,13 @@ function startNewRecorderCycle() {
       // sample has resolved by now.
       const startT = await startSample;
       const endT = await sampleVideoTime();
-      uploadChunk(blob, chunkIndex++, startT, endT);
+      const upload = uploadChunk(blob, chunkIndex++, startT, endT);
+
+      if (stopping) {
+        // The service worker closes this document after OFFSCREEN_DONE, so the
+        // final request must finish before cleanup sends that message.
+        await upload;
+      }
     }
 
     if (stopping) {
@@ -113,9 +120,11 @@ async function uploadChunk(blob, index, videoTimeStart, videoTimeEnd) {
   form.append("video_time_offset", String(videoTimeStart));
   form.append("video_time_end", String(videoTimeEnd));
   form.append("captured_at", new Date().toISOString());
+  if (videoTitle) form.append("video_title", videoTitle);
 
   try {
-    const res = await fetch(BACKEND_URL, { method: "POST", body: form });
+    const backend = await globalThis.CaptionAidConfig.resolveBackend();
+    const res = await fetch(`${backend}/upload`, { method: "POST", body: form });
     if (!res.ok) {
       console.error(`Upload failed for chunk ${index}: ${res.status}`);
     }

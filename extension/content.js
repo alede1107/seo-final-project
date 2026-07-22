@@ -8,8 +8,8 @@
 if (!window.__captionAidLoaded) {
   window.__captionAidLoaded = true;
 
-  const BACKEND = "http://localhost:5001";
-  const POLL_MS = 2000;
+  const backendPromise = globalThis.CaptionAidConfig.resolveBackend();
+  const POLL_MS = 1500;
 
   let pollTimer = null;
   let sessionId = null;
@@ -151,6 +151,12 @@ if (!window.__captionAidLoaded) {
     return mode === "asl" && gloss ? gloss : (chunk.text || "");
   }
 
+  function renderedLineText(chunk) {
+    const speaker = chunk.speaker_label;
+    const prefix = speaker ? `Speaker ${speaker}: ` : "";
+    return `${prefix}${lineText(chunk)}`;
+  }
+
   function setMode(next) {
     mode = next;
     if (!ui) return;
@@ -160,7 +166,9 @@ if (!window.__captionAidLoaded) {
       const txt = line.querySelector(".txt");
       const gloss = line.dataset.gloss || "";
       const en = line.dataset.en || "";
-      txt.textContent = mode === "asl" && gloss ? gloss : en;
+      const speaker = line.dataset.speaker || "";
+      const prefix = speaker ? `Speaker ${speaker}: ` : "";
+      txt.textContent = `${prefix}${mode === "asl" && gloss ? gloss : en}`;
     }
   }
 
@@ -194,13 +202,14 @@ if (!window.__captionAidLoaded) {
     // Stash both strings so the toggle can swap text with no refetch.
     line.dataset.en = chunk.text || "";
     line.dataset.gloss = Array.isArray(chunk.gloss) ? chunk.gloss.join(" ") : "";
+    line.dataset.speaker = chunk.speaker_label || "";
 
     const t = document.createElement("span");
     t.className = "t";
     t.textContent = fmtTime(chunk.video_time_offset);
     const txt = document.createElement("span");
     txt.className = "txt";
-    txt.textContent = lineText(chunk);
+    txt.textContent = renderedLineText(chunk);
 
     line.append(t, txt);
 
@@ -336,7 +345,8 @@ if (!window.__captionAidLoaded) {
   async function pollOnce() {
     if (!sessionId) return;
     try {
-      const res = await fetch(`${BACKEND}/captions/${encodeURIComponent(sessionId)}`);
+      const backend = await backendPromise;
+      const res = await fetch(`${backend}/captions/${encodeURIComponent(sessionId)}`);
       if (!res.ok) return;
       const { chunks } = await res.json();
       for (const c of chunks) {
@@ -354,7 +364,8 @@ if (!window.__captionAidLoaded) {
   async function loadCache() {
     if (!videoId) return;
     try {
-      const res = await fetch(`${BACKEND}/captions/video/${encodeURIComponent(videoId)}`);
+      const backend = await backendPromise;
+      const res = await fetch(`${backend}/captions/video/${encodeURIComponent(videoId)}`);
       if (!res.ok) return;
       const { chunks } = await res.json();
       for (const c of chunks) {
