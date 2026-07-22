@@ -236,7 +236,7 @@ export default function HistoryPage() {
           </div>
         )}
 
-        <section className="overflow-hidden border border-white/10 bg-[#0c0c0e] lg:grid lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[280px_minmax(0,1fr)_340px]">
+        <section className="overflow-hidden border border-white/10 bg-[#0c0c0e] lg:grid lg:grid-cols-[220px_minmax(0,1fr)] min-[1100px]:grid-cols-[220px_minmax(0,1fr)_280px] 2xl:grid-cols-[280px_minmax(0,1fr)_340px]">
           <aside className="border-b border-white/10 lg:border-b-0 lg:border-r">
             <div className="border-b border-white/10 p-3">
               <div className="mb-2 flex items-center justify-between">
@@ -438,7 +438,7 @@ export default function HistoryPage() {
             )}
           </div>
 
-          <aside className="border-t border-white/10 p-3 lg:col-start-2 xl:col-start-auto xl:border-l xl:border-t-0">
+          <aside className="border-t border-white/10 p-3 lg:col-start-2 min-[1100px]:col-start-auto min-[1100px]:border-l min-[1100px]:border-t-0">
             <div className="mb-3 flex items-center justify-between">
               <div>
                 <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-600">Selected caption</p>
