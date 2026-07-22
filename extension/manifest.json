@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "CaptionAid",
-  "version": "0.2.0",
-  "description": "Captures YouTube tab audio, transcribes it, and overlays captions aligned to video time.",
+  "version": "0.3.0",
+  "description": "Captures YouTube tab audio and overlays captions, ASL gloss, and matched sign clips.",
   "permissions": [
     "tabCapture",
     "offscreen",
@@ -13,6 +13,7 @@
   ],
   "host_permissions": [
     "http://localhost:5001/*",
+    "https://seo-final-project.vercel.app/*",
     "https://www.youtube.com/*"
   ],
   "background": {
@@ -21,7 +22,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/*"],
-      "js": ["content.js"],
+      "js": ["config.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

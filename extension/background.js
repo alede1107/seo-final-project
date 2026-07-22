@@ -25,7 +25,10 @@ async function ensureOffscreenDocument() {
 
 async function ensureContentScript(tabId) {
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["config.js", "content.js"],
+    });
   } catch (err) {
     console.warn("content script injection skipped:", err.message);
   }
@@ -51,6 +54,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         target: "offscreen",
         streamId: msg.streamId,
         videoId: msg.videoId,
+        videoTitle: msg.videoTitle,
         sessionId: msg.sessionId,
       });
 
@@ -94,8 +98,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (await hasOffscreenDocument()) {
         await chrome.runtime.sendMessage({ type: "OFFSCREEN_STOP", target: "offscreen" });
       }
-      const { tabId } = await chrome.storage.session.get("tabId");
-      if (tabId) chrome.tabs.sendMessage(tabId, { type: "CAPTIONS_STOP" }).catch(() => {});
+      // Keep the content script polling so the last uploaded chunk can finish
+      // in AssemblyAI and appear after recording stops.
       sendResponse({ ok: true });
     }
 

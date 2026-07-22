@@ -26,10 +26,12 @@ class FakeHttp:
         return FakeResponse(
             {
                 "status": "completed",
+                "text": "hello book",
                 "words": [
-                    {"text": "hello", "start": 0, "end": 400},
-                    {"text": "book", "start": 11000, "end": 11600},
+                    {"text": "hello", "start": 0, "end": 400, "speaker": "A"},
+                    {"text": "book", "start": 11000, "end": 11600, "speaker": "A"},
                 ],
+                "utterances": [{"speaker": "A", "text": "hello book"}],
             }
         )
 
@@ -136,6 +138,63 @@ class CloudPreparedStoreTests(unittest.TestCase):
 
         self.assertEqual(result, {"deleted": True, "captions_deleted": 1})
         self.assertEqual(self.store.get_prepared("abc123")["status"], "none")
+
+    def test_live_extension_chunk_persists_and_populates_shared_history(self):
+        pending = self.store.submit_live_chunk(
+            "abc123",
+            "abc123-session",
+            0,
+            "https://audio.test/chunk.webm",
+            video_time_offset=5,
+            video_time_end=17,
+            source_key="abc123/abc123-session/chunk-00000.webm",
+            title="Test video - YouTube",
+        )
+
+        self.assertEqual(pending["status"], "pending")
+        self.assertEqual(
+            self.store.get_prepared("abc123")["status"],
+            "preparing",
+        )
+
+        chunks = self.store.get_live_session("abc123-session", advance=True)
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0]["status"], "ready")
+        self.assertEqual(chunks[0]["text"], "hello book")
+        self.assertEqual(chunks[0]["speaker_label"], "A")
+        self.assertEqual(chunks[0]["clips"][0]["target_duration"], 12)
+
+        cached = self.store.get_video("abc123")
+        self.assertEqual(cached[0]["session_id"], "abc123-session")
+        self.assertEqual(cached[0]["gloss"], ["HELLO BOOK"])
+
+        history = self.store.list_prepared()
+        self.assertEqual(history[0]["status"], "ready")
+        self.assertEqual(history[0]["title"], "Test video - YouTube")
+        self.assertEqual(history[0]["chunk_count"], 1)
+
+    def test_live_extension_chunk_is_reused_for_the_same_video_time(self):
+        self.store.submit_live_chunk(
+            "abc123",
+            "first-session",
+            0,
+            "https://audio.test/chunk.webm",
+            video_time_offset=0,
+            video_time_end=10,
+            source_key="abc123/first-session/chunk-00000.webm",
+        )
+        self.store.get_live_session("first-session", advance=True)
+
+        covered = self.store.find_covering(
+            "abc123",
+            "second-session",
+            0.5,
+            9.5,
+        )
+
+        self.assertIsNotNone(covered)
+        self.assertEqual(covered["session_id"], "first-session")
 
 
 if __name__ == "__main__":

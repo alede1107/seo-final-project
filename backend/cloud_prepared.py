@@ -1,7 +1,7 @@
-"""Durable prepared-caption jobs for stateless production runtimes.
+"""Durable caption jobs for stateless production runtimes.
 
 Local development keeps using SQLite and background threads. Vercel uses this
-store so every polling request can resume the AssemblyAI job from S3 without
+store so whole-video jobs and extension audio chunks can resume from S3 without
 depending on a particular process staying alive.
 """
 
@@ -53,6 +53,13 @@ class S3PreparedStore:
     def _captions_key(self, video_id: str) -> str:
         return f"{self.prefix}/captions/{video_id}.json"
 
+    def _live_key(self, session_id: str, chunk_index: int) -> str:
+        return f"{self.prefix}/live/{session_id}/{chunk_index:05d}.json"
+
+    def _live_prefix(self, session_id: str | None = None) -> str:
+        base = f"{self.prefix}/live/"
+        return f"{base}{session_id}/" if session_id else base
+
     def _put_json(self, key: str, payload: Any) -> None:
         self.s3.put_object(
             Bucket=self.bucket,
@@ -72,9 +79,29 @@ class S3PreparedStore:
         body = response["Body"].read()
         return json.loads(body.decode("utf-8"))
 
+    def _list_keys(self, prefix: str) -> list[str]:
+        keys: list[str] = []
+        continuation_token = None
+        while True:
+            kwargs = {"Bucket": self.bucket, "Prefix": prefix}
+            if continuation_token:
+                kwargs["ContinuationToken"] = continuation_token
+            response = self.s3.list_objects_v2(**kwargs)
+            keys.extend(item["Key"] for item in response.get("Contents", []))
+            if not response.get("IsTruncated"):
+                return keys
+            continuation_token = response.get("NextContinuationToken")
+
     def _save_state(self, state: dict[str, Any]) -> None:
         state["updated_at"] = time.time()
         self._put_json(self._state_key(state["video_id"]), state)
+
+    def _save_live_state(self, state: dict[str, Any]) -> None:
+        state["updated_at"] = time.time()
+        self._put_json(
+            self._live_key(state["session_id"], int(state["chunk_index"])),
+            state,
+        )
 
     @staticmethod
     def _public_state(state: dict[str, Any] | None, video_id: str) -> dict[str, Any]:
@@ -94,6 +121,7 @@ class S3PreparedStore:
                 "chunk_count",
                 "sign_count",
                 "transcript_preview",
+                "source",
             )
         }
 
@@ -159,6 +187,295 @@ class S3PreparedStore:
         )
         state.setdefault("created_at", time.time())
         self._save_state(state)
+
+    @staticmethod
+    def _public_live_state(state: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: state.get(key)
+            for key in (
+                "video_id",
+                "session_id",
+                "chunk_index",
+                "status",
+                "video_time_offset",
+                "video_time_end",
+                "text",
+                "words",
+                "gloss",
+                "clips",
+                "speaker_label",
+                "error",
+            )
+        }
+
+    def get_live_chunk(
+        self,
+        session_id: str,
+        chunk_index: int,
+        *,
+        advance: bool = False,
+    ) -> dict[str, Any] | None:
+        state = self._get_json(self._live_key(session_id, chunk_index))
+        if state and advance and state.get("status") == "pending":
+            state = self._advance_live_chunk(state)
+        return self._public_live_state(state) if state else None
+
+    def submit_live_chunk(
+        self,
+        video_id: str,
+        session_id: str,
+        chunk_index: int,
+        audio_url: str,
+        *,
+        video_time_offset: float,
+        video_time_end: float,
+        source_key: str,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit one extension-captured chunk and persist its polling state."""
+        existing = self._get_json(self._live_key(session_id, chunk_index))
+        if existing and existing.get("status") in {"pending", "ready", "empty"}:
+            return self._public_live_state(existing)
+
+        now = time.time()
+        state = {
+            "video_id": video_id,
+            "session_id": session_id,
+            "chunk_index": int(chunk_index),
+            "status": "pending",
+            "video_time_offset": float(video_time_offset),
+            "video_time_end": float(video_time_end),
+            "text": "",
+            "words": [],
+            "gloss": [],
+            "clips": [],
+            "speaker_label": None,
+            "error": None,
+            "source_key": source_key,
+            "created_at": now,
+        }
+        self._save_live_state(state)
+
+        try:
+            response = self.http.post(
+                "https://api.assemblyai.com/v2/transcript",
+                headers={"authorization": self.assemblyai_key},
+                json={
+                    "audio_url": audio_url,
+                    "punctuate": True,
+                    "format_text": True,
+                    "speaker_labels": True,
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            state["transcript_id"] = response.json()["id"]
+            self._save_live_state(state)
+        except Exception as exc:
+            state.update({"status": "error", "error": str(exc)})
+            self._save_live_state(state)
+            self._refresh_live_summary(video_id, title=title, latest_error=str(exc))
+            raise
+
+        self._refresh_live_summary(
+            video_id,
+            title=title,
+            duration=video_time_end,
+        )
+        return self._public_live_state(state)
+
+    def get_live_session(
+        self,
+        session_id: str,
+        *,
+        advance: bool = False,
+    ) -> list[dict[str, Any]]:
+        states = [
+            self._get_json(key)
+            for key in self._list_keys(self._live_prefix(session_id))
+        ]
+        states = [state for state in states if state]
+        states.sort(key=lambda item: int(item.get("chunk_index") or 0))
+
+        if advance:
+            advanced = 0
+            for index, state in enumerate(states):
+                if state.get("status") != "pending" or advanced >= self.batch_size:
+                    continue
+                states[index] = self._advance_live_chunk(state)
+                advanced += 1
+
+        return [self._public_live_state(state) for state in states]
+
+    def _advance_live_chunk(self, state: dict[str, Any]) -> dict[str, Any]:
+        transcript_id = state.get("transcript_id")
+        if not transcript_id:
+            state.update(
+                {
+                    "status": "error",
+                    "error": "Caption chunk is missing its AssemblyAI transcript ID",
+                }
+            )
+            self._save_live_state(state)
+            self._refresh_live_summary(
+                state["video_id"], latest_error=state["error"]
+            )
+            return state
+
+        response = self.http.get(
+            f"https://api.assemblyai.com/v2/transcript/{transcript_id}",
+            headers={"authorization": self.assemblyai_key},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        transcript_status = payload.get("status")
+        if transcript_status == "error":
+            state.update(
+                {
+                    "status": "error",
+                    "error": payload.get("error", "AssemblyAI transcription failed"),
+                }
+            )
+            self._save_live_state(state)
+            self._refresh_live_summary(
+                state["video_id"], latest_error=state["error"]
+            )
+            return state
+        if transcript_status != "completed":
+            return state
+
+        words = []
+        for word in payload.get("words") or []:
+            normalized = {
+                "text": word["text"],
+                "start": word["start"],
+                "end": word["end"],
+            }
+            if word.get("speaker") is not None:
+                normalized["speaker"] = word["speaker"]
+            words.append(normalized)
+
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            state.update({"status": "empty", "text": "", "words": words})
+            self._save_live_state(state)
+            self._refresh_live_summary(
+                state["video_id"],
+                duration=state.get("video_time_end"),
+                completed=True,
+            )
+            return state
+
+        start = float(state.get("video_time_offset") or 0)
+        end = float(state.get("video_time_end") or 0)
+        duration = end - start
+        if duration <= 0:
+            duration = max(0.1, float(words[-1]["end"]) / 1000) if words else 10.0
+            end = start + duration
+
+        gloss, clips = self.caption_builder(text, words, duration)
+        utterances = payload.get("utterances") or []
+        speaker_label = utterances[0].get("speaker") if utterances else None
+        if speaker_label is None and words:
+            speaker_label = words[0].get("speaker")
+
+        state.update(
+            {
+                "status": "ready",
+                "video_time_end": end,
+                "text": text,
+                "words": words,
+                "gloss": gloss,
+                "clips": clips,
+                "speaker_label": speaker_label,
+                "error": None,
+            }
+        )
+        self._save_live_state(state)
+        self._merge_live_caption(state)
+        self._refresh_live_summary(state["video_id"], duration=end)
+        return state
+
+    def _merge_live_caption(self, caption: dict[str, Any]) -> None:
+        video_id = caption["video_id"]
+        captions = self.get_video(video_id)
+        identity = (caption["session_id"], int(caption["chunk_index"]))
+        by_identity = {
+            (item.get("session_id"), int(item.get("chunk_index") or 0)): item
+            for item in captions
+        }
+        by_identity[identity] = self._public_live_state(caption)
+        merged = sorted(
+            by_identity.values(),
+            key=lambda item: (
+                float(item.get("video_time_offset") or 0),
+                str(item.get("session_id") or ""),
+                int(item.get("chunk_index") or 0),
+            ),
+        )
+        self._put_json(self._captions_key(video_id), merged)
+
+    def _refresh_live_summary(
+        self,
+        video_id: str,
+        *,
+        title: str | None = None,
+        duration: float | None = None,
+        latest_error: str | None = None,
+        completed: bool = False,
+    ) -> None:
+        captions = self.get_video(video_id)
+        previous = self._get_json(self._state_key(video_id), {})
+        clean_title = str(title or "").strip()[:300]
+        previous_title = str(previous.get("title") or "").strip()
+        resolved_title = clean_title or previous_title or f"YouTube video {video_id}"
+        max_end = max(
+            [float(item.get("video_time_end") or 0) for item in captions]
+            + [float(duration or 0), float(previous.get("duration") or 0)]
+        )
+        has_captions = bool(captions)
+        is_ready = has_captions or completed
+        status = "ready" if is_ready else ("error" if latest_error else "preparing")
+        summary = {
+            "video_id": video_id,
+            "status": status,
+            "stage": "ready" if is_ready else ("error" if latest_error else "transcribing"),
+            "progress": 100 if is_ready else 40,
+            "error": None if is_ready else latest_error,
+            "title": resolved_title,
+            "duration": max_end,
+            "created_at": previous.get("created_at") or time.time(),
+            "source": "extension",
+            "chunk_count": len(captions),
+            "sign_count": sum(len(item.get("clips") or []) for item in captions),
+            "transcript_preview": " ".join(
+                item.get("text", "").strip() for item in captions[:2]
+            )[:240],
+        }
+        self._save_state(summary)
+
+    def find_covering(
+        self,
+        video_id: str,
+        session_id: str,
+        start: float,
+        end: float,
+        *,
+        min_overlap: float = 0.9,
+    ) -> dict[str, Any] | None:
+        span = end - start
+        if span <= 0:
+            return None
+        for caption in self.get_video(video_id):
+            if caption.get("session_id") == session_id or caption.get("status") != "ready":
+                continue
+            caption_start = float(caption.get("video_time_offset") or 0)
+            caption_end = float(caption.get("video_time_end") or 0)
+            overlap = max(0.0, min(end, caption_end) - max(start, caption_start))
+            if overlap / span >= min_overlap:
+                return caption
+        return None
 
     def get_prepared(self, video_id: str, *, advance: bool = False) -> dict[str, Any]:
         state = self._get_json(self._state_key(video_id))
@@ -287,17 +604,7 @@ class S3PreparedStore:
     def list_prepared(self, limit: int = 50) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit), 100))
         prefix = f"{self.prefix}/prepared/"
-        keys: list[str] = []
-        continuation_token = None
-        while True:
-            kwargs = {"Bucket": self.bucket, "Prefix": prefix}
-            if continuation_token:
-                kwargs["ContinuationToken"] = continuation_token
-            response = self.s3.list_objects_v2(**kwargs)
-            keys.extend(item["Key"] for item in response.get("Contents", []))
-            if not response.get("IsTruncated"):
-                break
-            continuation_token = response.get("NextContinuationToken")
+        keys = self._list_keys(prefix)
 
         states = [self._get_json(key) for key in keys]
         states = [state for state in states if state]
@@ -337,8 +644,20 @@ class S3PreparedStore:
         ]
         if state.get("source_key"):
             keys.append(state["source_key"])
-        self.s3.delete_objects(
-            Bucket=self.bucket,
-            Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True},
-        )
+
+        for key in self._list_keys(self._live_prefix()):
+            live_state = self._get_json(key)
+            if live_state and live_state.get("video_id") == video_id:
+                keys.append(key)
+                if live_state.get("source_key"):
+                    keys.append(live_state["source_key"])
+
+        keys.extend(self._list_keys(f"{video_id}/"))
+        unique_keys = list(dict.fromkeys(keys))
+        for start in range(0, len(unique_keys), 1000):
+            batch = unique_keys[start : start + 1000]
+            self.s3.delete_objects(
+                Bucket=self.bucket,
+                Delete={"Objects": [{"Key": key} for key in batch], "Quiet": True},
+            )
         return {"deleted": True, "captions_deleted": len(captions)}

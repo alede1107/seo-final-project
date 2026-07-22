@@ -143,11 +143,26 @@ def health():
                 missing.append(key)
         if missing:
             return jsonify({"ok": False, "missing": missing}), 503
+        try:
+            s3.head_bucket(Bucket=S3_BUCKET)
+        except (BotoCoreError, ClientError) as e:
+            app.logger.error("S3 health check failed: %s", e)
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "S3 credentials or bucket access are invalid",
+                }
+            ), 503
     return jsonify({"ok": True})
 
 
 def _get_prepared(video_id, *, advance=False):
     if cloud_store is not None:
+        status = cloud_store.get_prepared(video_id, advance=False)
+        if status.get("source") == "extension":
+            # Extension chunks are advanced through /captions/<session_id>, not
+            # through the legacy whole-video preparation poller.
+            return status
         return cloud_store.get_prepared(video_id, advance=advance)
     return pipeline.get_prepared(video_id)
 
@@ -170,6 +185,10 @@ def _mark_prepare_error(video_id, error):
 def upload():
     if not S3_BUCKET:
         return jsonify({"error": "server misconfigured: S3_BUCKET not set"}), 500
+    if CLOUD_STORE_ENABLED and cloud_store is None:
+        return jsonify(
+            {"error": "server misconfigured: cloud caption store credentials are incomplete"}
+        ), 500
 
     audio = request.files.get("audio")
     if audio is None:
@@ -186,10 +205,33 @@ def upload():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
+    video_title = request.form.get("video_title", "").strip()[:300] or None
+
+    if cloud_store is not None:
+        try:
+            existing = cloud_store.get_live_chunk(session_id, chunk_index)
+            if existing and existing.get("status") in {"pending", "ready", "empty"}:
+                return jsonify({"ok": True, "cached": True}), 200
+            covered = cloud_store.find_covering(
+                video_id,
+                session_id,
+                video_time_offset,
+                video_time_end,
+            )
+        except (BotoCoreError, ClientError) as e:
+            app.logger.error("caption store read failed: %s", e)
+            return jsonify({"error": "caption store unavailable"}), 503
+    else:
+        covered = pipeline.find_covering(
+            video_id,
+            session_id,
+            video_time_offset,
+            video_time_end,
+        )
+
     # Range-aware dedup: if this chunk's video-time span is already captioned
     # by a prior session of this video, skip S3 + AssemblyAI entirely. The
     # overlay already shows the region via the /captions/video cache path.
-    covered = pipeline.find_covering(video_id, session_id, video_time_offset, video_time_end)
     if covered is not None:
         return (
             jsonify(
@@ -225,6 +267,23 @@ def upload():
     except (BotoCoreError, ClientError) as e:
         app.logger.error("S3 upload failed: %s", e)
         return jsonify({"error": "s3 upload failed"}), 502
+
+    if cloud_store is not None:
+        try:
+            cloud_store.submit_live_chunk(
+                video_id,
+                session_id,
+                chunk_index,
+                audio_url,
+                video_time_offset=video_time_offset,
+                video_time_end=video_time_end,
+                source_key=key,
+                title=video_title,
+            )
+        except Exception as e:  # noqa: BLE001 - upstream HTTP errors vary.
+            app.logger.error("AssemblyAI chunk submission failed: %s", e)
+            return jsonify({"error": "AssemblyAI submission failed"}), 502
+        return jsonify({"ok": True, "key": key, "status": "pending"}), 201
 
     pipeline.insert_pending(video_id, session_id, chunk_index, video_time_offset, video_time_end)
     pipeline.transcribe_async(audio_url, video_id, session_id, chunk_index)
@@ -410,7 +469,15 @@ def prepare_status(video_id):
 @app.route("/captions/<session_id>/<int:chunk_index>", methods=["GET"])
 @app.route("/api/captions/<session_id>/<int:chunk_index>", methods=["GET"])
 def caption_chunk(session_id, chunk_index):
-    chunk = pipeline.get_chunk(session_id, chunk_index)
+    try:
+        chunk = (
+            cloud_store.get_live_chunk(session_id, chunk_index, advance=True)
+            if cloud_store
+            else pipeline.get_chunk(session_id, chunk_index)
+        )
+    except (BotoCoreError, ClientError, requests.RequestException) as e:
+        app.logger.error("caption chunk read failed: %s", e)
+        return jsonify({"error": "caption chunk unavailable"}), 503
     if chunk is None:
         return jsonify({"status": "unknown"}), 404
     return jsonify(chunk)
@@ -419,8 +486,17 @@ def caption_chunk(session_id, chunk_index):
 @app.route("/captions/<session_id>", methods=["GET"])
 @app.route("/api/captions/<session_id>", methods=["GET"])
 def caption_session(session_id):
-    """All chunks for a session — what the content script polls."""
-    return jsonify({"session_id": session_id, "chunks": pipeline.get_session(session_id)})
+    """All chunks for a session - what the content script polls."""
+    try:
+        chunks = (
+            cloud_store.get_live_session(session_id, advance=True)
+            if cloud_store
+            else pipeline.get_session(session_id)
+        )
+    except (BotoCoreError, ClientError, requests.RequestException) as e:
+        app.logger.error("caption session read failed: %s", e)
+        return jsonify({"error": "caption session unavailable"}), 503
+    return jsonify({"session_id": session_id, "chunks": chunks})
 
 
 @app.route("/captions/video/<video_id>", methods=["GET"])

@@ -60,7 +60,7 @@ export default function DeletePreparedDialog({
           </AlertDialog.Title>
           <AlertDialog.Description className="mt-2 text-sm leading-6 text-neutral-500">
             <span className="block font-semibold text-neutral-300">{title}</span>
-            This deletes its prepared transcript, gloss, and matched sign queue. Live-capture sessions, S3 audio, and the shared sign library stay untouched.
+            This deletes the video's transcript, gloss, matched sign queue, and captured audio. The shared sign library stays untouched.
           </AlertDialog.Description>
 
           {error && (
