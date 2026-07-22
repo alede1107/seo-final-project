@@ -45,6 +45,7 @@ if __package__:
 else:  # Supports `python backend/app.py` in addition to `python -m backend.app`.
     import pipeline
 
+from backend.cloud_prepared import S3PreparedStore
 from services.chunk_processor import load_word_map
 
 app = Flask(__name__, static_folder=None)
@@ -52,6 +53,28 @@ app = Flask(__name__, static_folder=None)
 S3_BUCKET = os.environ.get("S3_BUCKET", "").strip()
 s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+
+CLOUD_STORE_ENABLED = (
+    os.environ.get("CAPTION_STORE", "").strip().lower() == "s3"
+    or bool(os.environ.get("VERCEL"))
+)
+cloud_store = None
+if CLOUD_STORE_ENABLED and S3_BUCKET and pipeline.ASSEMBLYAI_KEY:
+    try:
+        cloud_batch_size = int(os.environ.get("CAPTION_MATCH_BATCH_SIZE", "4"))
+    except ValueError:
+        cloud_batch_size = 4
+    cloud_store = S3PreparedStore(
+        s3,
+        S3_BUCKET,
+        pipeline.ASSEMBLYAI_KEY,
+        pipeline._segment_words,
+        lambda text, words, duration: pipeline._gloss_and_clips(
+            text, words=words, chunk_duration=duration
+        ),
+        prefix=os.environ.get("CAPTION_STORE_PREFIX", "captionaid/v2"),
+        batch_size=cloud_batch_size,
+    )
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
@@ -63,8 +86,10 @@ def add_cors(response):
     # Local development must support unpacked Chrome and Edge extensions,
     # whose generated IDs differ on every teammate's machine.
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    if request.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
 
@@ -88,7 +113,39 @@ def _validate(value: str, field: str) -> str:
 @app.route("/health", methods=["GET"])
 @app.route("/api/health", methods=["GET"])
 def health():
+    if CLOUD_STORE_ENABLED:
+        missing = []
+        for key in (
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "S3_BUCKET",
+            "ASSEMBLYAI_API_KEY",
+        ):
+            if not os.environ.get(key, "").strip():
+                missing.append(key)
+        if missing:
+            return jsonify({"ok": False, "missing": missing}), 503
     return jsonify({"ok": True})
+
+
+def _get_prepared(video_id, *, advance=False):
+    if cloud_store is not None:
+        return cloud_store.get_prepared(video_id, advance=advance)
+    return pipeline.get_prepared(video_id)
+
+
+def _mark_prepare_started(video_id):
+    if cloud_store is not None:
+        cloud_store.start(video_id)
+    else:
+        pipeline.mark_prepare_started(video_id)
+
+
+def _mark_prepare_error(video_id, error):
+    if cloud_store is not None:
+        cloud_store.mark_error(video_id, error)
+    else:
+        pipeline.mark_prepare_error(video_id, error)
 
 
 @app.route("/upload", methods=["POST"])
@@ -155,6 +212,7 @@ def upload():
     pipeline.transcribe_async(audio_url, video_id, session_id, chunk_index)
 
     return jsonify({"ok": True, "key": key}), 201
+
 
 def _download_audio(video_id):
     """Download bestaudio for a YouTube video_id to a temp file via yt-dlp.
@@ -234,7 +292,16 @@ def prepare():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    status = pipeline.get_prepared(video_id)
+    if CLOUD_STORE_ENABLED and cloud_store is None:
+        return jsonify(
+            {"error": "server misconfigured: cloud caption store credentials are incomplete"}
+        ), 500
+
+    try:
+        status = _get_prepared(video_id)
+    except (BotoCoreError, ClientError) as e:
+        app.logger.error("caption store read failed: %s", e)
+        return jsonify({"error": "caption store unavailable"}), 503
     if status["status"] == "ready":
         return jsonify({"status": "ready", "cached": True}), 200
     if status["status"] == "preparing":
@@ -242,7 +309,7 @@ def prepare():
 
     # Mock mode: skip the download + S3 entirely; the pipeline fabricates ready
     # segments so the whole prepare -> skip-capture path is testable offline.
-    if not pipeline.ASSEMBLYAI_KEY:
+    if not pipeline.ASSEMBLYAI_KEY and not CLOUD_STORE_ENABLED:
         pipeline.prepare_async(video_id, None)
         return jsonify({"status": "preparing"}), 202
 
@@ -251,15 +318,23 @@ def prepare():
 
     # Persist this before downloading so a closed/reopened extension popup can
     # still see that preparation is active and will not launch a duplicate job.
-    pipeline.mark_prepare_started(video_id)
+    try:
+        _mark_prepare_started(video_id)
+    except (BotoCoreError, ClientError) as e:
+        app.logger.error("caption store write failed: %s", e)
+        return jsonify({"error": "caption store unavailable"}), 503
     tmpdir = None
+    metadata = {"title": None, "duration": None}
+    key = None
+    audio_url = None
     try:
         path, ext, tmpdir, metadata = _download_audio(video_id)
-        pipeline.set_prepare_metadata(
-            video_id,
-            title=metadata.get("title"),
-            duration=metadata.get("duration"),
-        )
+        if cloud_store is None:
+            pipeline.set_prepare_metadata(
+                video_id,
+                title=metadata.get("title"),
+                duration=metadata.get("duration"),
+            )
         key = f"{video_id}/source-audio.{ext}"
         with open(path, "rb") as f:
             s3.put_object(
@@ -273,27 +348,45 @@ def prepare():
         )
     except (BotoCoreError, ClientError) as e:
         app.logger.error("S3 source upload failed: %s", e)
-        pipeline.mark_prepare_error(video_id, "S3 source upload failed")
+        _mark_prepare_error(video_id, "S3 source upload failed")
         return jsonify({"error": "s3 upload failed"}), 502
     except Exception as e:  # noqa: BLE001 - yt-dlp exposes several error types.
         app.logger.error("audio download failed: %s", e)
         detail = re.sub(r"\s+", " ", str(e)).strip()
         error = f"YouTube audio download failed: {detail}"
-        pipeline.mark_prepare_error(video_id, error)
+        _mark_prepare_error(video_id, error)
         return jsonify({"error": error}), 502
 
     finally:
         if tmpdir is not None:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    pipeline.prepare_async(video_id, audio_url)
+    if cloud_store is not None:
+        try:
+            cloud_store.submit(
+                video_id,
+                audio_url,
+                title=metadata.get("title"),
+                duration=metadata.get("duration"),
+                source_key=key,
+            )
+        except Exception as e:  # noqa: BLE001 - upstream HTTP errors vary.
+            app.logger.error("AssemblyAI submission failed: %s", e)
+            _mark_prepare_error(video_id, "AssemblyAI submission failed")
+            return jsonify({"error": "AssemblyAI submission failed"}), 502
+    else:
+        pipeline.prepare_async(video_id, audio_url)
     return jsonify({"status": "preparing"}), 202
 
 
 @app.route("/prepare/<video_id>", methods=["GET"])
 @app.route("/api/prepare/<video_id>", methods=["GET"])
 def prepare_status(video_id):
-    return jsonify(pipeline.get_prepared(video_id))
+    try:
+        return jsonify(_get_prepared(video_id, advance=True))
+    except (BotoCoreError, ClientError, requests.RequestException) as e:
+        app.logger.error("preparation status failed: %s", e)
+        return jsonify({"error": "preparation status is temporarily unavailable"}), 503
 
 # CAPTION READ 
 @app.route("/captions/<session_id>/<int:chunk_index>", methods=["GET"])
@@ -316,7 +409,16 @@ def caption_session(session_id):
 @app.route("/api/captions/video/<video_id>", methods=["GET"])
 def caption_video(video_id):
     """Cache-hit path: every ready caption ever produced for this video."""
-    return jsonify({"video_id": video_id, "chunks": pipeline.get_video(video_id)})
+    try:
+        chunks = (
+            cloud_store.get_video(video_id)
+            if cloud_store
+            else pipeline.get_video(video_id)
+        )
+    except (BotoCoreError, ClientError) as e:
+        app.logger.error("caption store read failed: %s", e)
+        return jsonify({"error": "caption store unavailable"}), 503
+    return jsonify({"video_id": video_id, "chunks": chunks})
 
 
 @app.route("/api/sessions", methods=["GET"])
@@ -325,7 +427,15 @@ def sessions():
         limit = int(request.args.get("limit", "30"))
     except ValueError:
         return jsonify({"error": "limit must be an integer"}), 400
-    items = pipeline.list_prepared(limit=limit)
+    try:
+        items = (
+            cloud_store.list_prepared(limit=limit)
+            if cloud_store
+            else pipeline.list_prepared(limit=limit)
+        )
+    except (BotoCoreError, ClientError) as e:
+        app.logger.error("caption history read failed: %s", e)
+        return jsonify({"error": "caption history unavailable"}), 503
     return jsonify({"items": items, "count": len(items)})
 
 
@@ -336,7 +446,15 @@ def delete_session(video_id):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    result = pipeline.delete_prepared(safe_video_id)
+    try:
+        result = (
+            cloud_store.delete_prepared(safe_video_id)
+            if cloud_store
+            else pipeline.delete_prepared(safe_video_id)
+        )
+    except (BotoCoreError, ClientError) as e:
+        app.logger.error("caption delete failed: %s", e)
+        return jsonify({"error": "caption store unavailable"}), 503
     if result.get("reason") == "not_found":
         return jsonify({"error": "prepared video not found"}), 404
     if result.get("reason") == "preparing":

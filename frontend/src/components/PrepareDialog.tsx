@@ -198,7 +198,7 @@ export default function PrepareDialog({ onPrepared }: PrepareDialogProps) {
                   />
                 </Progress.Root>
                 <p className="mt-2 font-mono text-[10px] leading-4 text-neutral-600">
-                  Approximate progress. Keep the backend running while this finishes.
+                  Approximate progress. This window can stay open while preparation finishes.
                 </p>
               </div>
             )}
