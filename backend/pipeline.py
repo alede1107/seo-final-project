@@ -20,6 +20,7 @@ TODO: Switch to Celery if concurrency becomes an issue
 import atexit
 import json
 import os
+import re
 import sys
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
@@ -445,6 +446,96 @@ def _segment_words(words, seg_ms=10_000):
         text = " ".join(w["text"] for w in b)
         out.append((offset_s, end_s, text, b))
     return out
+
+
+def segment_caption_cues(cues, target_seconds=10.0):
+    """Group timed YouTube caption cues into the prepared pipeline format."""
+    buckets = []
+    bucket = []
+    bucket_start = 0.0
+
+    def flush():
+        nonlocal bucket
+        if not bucket:
+            return
+
+        offset = float(bucket[0]["start"])
+        end = max(float(cue["end"]) for cue in bucket)
+        text = " ".join(cue["text"] for cue in bucket).strip()
+        words = []
+        for cue in bucket:
+            tokens = re.findall(r"\S+", cue["text"])
+            if not tokens:
+                continue
+            cue_start = float(cue["start"])
+            cue_end = max(cue_start + 0.1, float(cue["end"]))
+            step = (cue_end - cue_start) / len(tokens)
+            for index, token in enumerate(tokens):
+                start_ms = round((cue_start - offset + (step * index)) * 1000)
+                end_ms = round((cue_start - offset + (step * (index + 1))) * 1000)
+                words.append({"text": token, "start": start_ms, "end": end_ms})
+
+        buckets.append(
+            {
+                "offset": offset,
+                "end": max(offset + 0.1, end),
+                "text": text,
+                "words": words,
+            }
+        )
+        bucket = []
+
+    for cue in sorted(cues, key=lambda item: (item["start"], item["end"])):
+        if bucket and float(cue["start"]) - bucket_start >= target_seconds:
+            flush()
+        if not bucket:
+            bucket_start = float(cue["start"])
+        bucket.append(cue)
+        if float(cue["end"]) - bucket_start >= target_seconds:
+            flush()
+
+    flush()
+    return buckets
+
+
+def prepare_segments_async(video_id, segments, *, title=None, duration=None):
+    """Prepare browser-supplied timed captions through the shared ASL pipeline."""
+    _set_prepared(video_id, "preparing")
+    set_prepare_metadata(video_id, title=title, duration=duration)
+    _executor.submit(_prepare_segments, video_id, segments)
+
+
+def _prepare_segments(video_id, segments):
+    session_id = f"pre-{video_id}"
+    try:
+        with _lock:
+            _conn.execute("DELETE FROM captions WHERE session_id=?", (session_id,))
+            _conn.commit()
+
+        for index, segment in enumerate(segments):
+            offset = float(segment["offset"])
+            end = float(segment["end"])
+            words = segment.get("words") or []
+            text = segment["text"]
+            gloss, clips = _gloss_and_clips(
+                text,
+                words=words,
+                chunk_duration=max(0.1, end - offset),
+            )
+            insert_ready(
+                video_id,
+                session_id,
+                index,
+                offset,
+                end,
+                text,
+                words,
+                gloss,
+                clips,
+            )
+        _set_prepared(video_id, "ready")
+    except Exception as exc:  # noqa: BLE001 - worker failures become job state.
+        _set_prepared(video_id, "error", str(exc))
 
 
 def _prepare(video_id, audio_url):

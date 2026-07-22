@@ -125,6 +125,38 @@ class CloudPreparedStoreTests(unittest.TestCase):
         self.assertEqual(history[0]["title"], "Test video")
         self.assertEqual(history[0]["chunk_count"], 2)
 
+    def test_browser_caption_track_uses_the_same_durable_matching_pipeline(self):
+        state = self.store.submit_segments(
+            "captioned1",
+            [
+                {
+                    "offset": 0.0,
+                    "end": 4.0,
+                    "text": "hello",
+                    "words": [{"text": "hello", "start": 0, "end": 400}],
+                },
+                {
+                    "offset": 11.0,
+                    "end": 12.0,
+                    "text": "book",
+                    "words": [{"text": "book", "start": 0, "end": 600}],
+                },
+            ],
+            title="Captioned video",
+            duration=12,
+        )
+
+        self.assertEqual(state["source"], "youtube_captions")
+        self.assertEqual(state["stage"], "matching_signs")
+        first_poll = self.store.get_prepared("captioned1", advance=True)
+        self.assertEqual(first_poll["status"], "preparing")
+        second_poll = self.store.get_prepared("captioned1", advance=True)
+        self.assertEqual(second_poll["status"], "ready")
+        self.assertEqual(
+            [caption["text"] for caption in self.store.get_video("captioned1")],
+            ["hello", "book"],
+        )
+
     def test_delete_removes_cloud_job_and_captions(self):
         self.store.start("abc123")
         self.store.mark_error("abc123", "failed")

@@ -26,6 +26,13 @@
     #stop { background: #da3633; color: white; margin-top: 8px; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     #status { font-size: 12px; margin-top: 12px; color: #8a8f98; min-height: 16px; }
+    #progress { margin-top: 12px; }
+    #progress[hidden] { display: none; }
+    .progress-meta { display: flex; justify-content: space-between; gap: 8px;
+                     margin-bottom: 5px; color: #a8adb7; font-size: 11px; }
+    .progress-track { height: 5px; overflow: hidden; border-radius: 3px; background: #292d36; }
+    #progress-fill { display: block; width: 0; height: 100%; background: #2ea043;
+                     transition: width 180ms ease; }
     .recording { color: #f0883e !important; }
     .ready { color: #2ea043 !important; }
   </style>
@@ -35,6 +42,12 @@
   <p id="video-id">No YouTube video detected</p>
   <button id="start" disabled>Prepare captions</button>
   <button id="stop" disabled>Stop CaptionAid</button>
+  <div id="progress" hidden>
+    <div class="progress-meta"><span id="progress-stage">Preparing transcript</span><span id="progress-percent">0%</span></div>
+    <div id="progress-track" class="progress-track" role="progressbar" aria-label="Caption preparation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <span id="progress-fill"></span>
+    </div>
+  </div>
   <p id="status"></p>
   <script src="config.js"></script>
   <script src="popup.js"></script>

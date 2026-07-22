@@ -63,8 +63,8 @@ export default function PrepareDialog() {
                   Caption a YouTube video
                 </Dialog.Title>
                 <Dialog.Description className="mt-1 text-sm leading-5 text-neutral-500">
-                  Open the video, then use the CaptionAid extension to capture its audio and build
-                  captions, ASL gloss, and matched sign clips.
+                  Open the video, then use the CaptionAid extension to prepare its full timed
+                  transcript, ASL gloss, and matched sign clips before playback.
                 </Dialog.Description>
               </div>
               <Dialog.Close asChild>
@@ -103,9 +103,9 @@ export default function PrepareDialog() {
               <div className="border border-lime-400/20 bg-lime-400/5 px-3 py-3" role="status">
                 <p className="text-sm font-semibold text-lime-300">YouTube opened</p>
                 <ol className="mt-2 space-y-1 font-mono text-[11px] leading-5 text-lime-100/60">
-                  <li>1. Start playing the video.</li>
-                  <li>2. Open CaptionAid and press Prepare captions.</li>
-                  <li>3. Return here to review the transcript and signs.</li>
+                  <li>1. Open CaptionAid on the YouTube tab.</li>
+                  <li>2. Press Prepare captions and wait until it is ready.</li>
+                  <li>3. Press play, or return here to review the prepared transcript.</li>
                 </ol>
               </div>
             )}

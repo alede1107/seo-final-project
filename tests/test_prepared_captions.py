@@ -38,6 +38,22 @@ class FakeYoutubeDL:
 
 
 class PreparedCaptionTests(unittest.TestCase):
+    def test_timed_caption_cues_are_grouped_for_the_shared_pipeline(self):
+        segments = app_module.pipeline.segment_caption_cues(
+            [
+                {"start": 0.5, "end": 3.0, "text": "hello everyone"},
+                {"start": 3.0, "end": 9.5, "text": "welcome back"},
+                {"start": 12.0, "end": 14.0, "text": "open the book"},
+            ]
+        )
+
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(segments[0]["text"], "hello everyone welcome back")
+        self.assertEqual(segments[0]["offset"], 0.5)
+        self.assertEqual(segments[0]["end"], 9.5)
+        self.assertEqual(segments[1]["text"], "open the book")
+        self.assertTrue(all(word["end"] > word["start"] for word in segments[0]["words"]))
+
     def test_downloader_enables_node_and_skips_ffmpeg_conversion(self):
         def find_runtime(executable):
             return "/test/node" if executable == "node" else None

@@ -256,7 +256,7 @@ export default function HistoryPage() {
                 {!loadingSessions && !visibleSessions.length && (
                   <div className="px-4 py-8 text-center">
                     <p className="text-sm font-bold tracking-tight text-neutral-300">No videos yet</p>
-                    <p className="mt-1 text-xs leading-5 text-neutral-600">Open a YouTube video and start CaptionAid to begin.</p>
+                    <p className="mt-1 text-xs leading-5 text-neutral-600">Open a captioned YouTube video and prepare it with CaptionAid.</p>
                   </div>
                 )}
                 <div className="divide-y divide-white/10">

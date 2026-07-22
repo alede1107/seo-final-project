@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "CaptionAid",
-  "version": "0.3.1",
-  "description": "Captures YouTube tab audio and overlays captions, ASL gloss, and matched sign clips.",
+  "version": "0.4.0",
+  "description": "Prepares YouTube transcripts and overlays timed captions, ASL gloss, and matched sign clips.",
   "permissions": [
     "tabCapture",
     "offscreen",
