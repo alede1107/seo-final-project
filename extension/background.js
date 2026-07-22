@@ -115,11 +115,7 @@ async function readYouTubeTranscript(tabId, expectedVideoId) {
       // through URLSearchParams can make a valid timedtext URL return an empty
       // body even though the video has captions.
       let trackUrl = track.baseUrl;
-      if (/[?&]fmt=/.test(trackUrl)) {
-        trackUrl = trackUrl.replace(/([?&])fmt=[^&]*/i, "$1fmt=json3");
-      } else {
-        trackUrl += `${trackUrl.includes("?") ? "&" : "?"}fmt=json3`;
-      }
+      if (!/[?&]fmt=/.test(trackUrl)) trackUrl += `${trackUrl.includes("?") ? "&" : "?"}fmt=json3`;
       if (translated && !/[?&]tlang=/.test(trackUrl)) trackUrl += "&tlang=en";
 
       let timedText;
@@ -194,23 +190,6 @@ async function readYouTubeTranscript(tabId, expectedVideoId) {
   };
 }
 
-function tabVideoId(rawUrl) {
-  try {
-    const url = new URL(rawUrl || "");
-    if (url.hostname !== "www.youtube.com") return "";
-    if (url.pathname === "/watch") return url.searchParams.get("v") || "";
-    if (url.pathname.startsWith("/shorts/")) return url.pathname.split("/")[2] || "";
-  } catch (_) {}
-  return "";
-}
-
-async function readOpenYouTubeTranscript(videoId) {
-  const tabs = await chrome.tabs.query({ url: "https://www.youtube.com/*" });
-  const tab = tabs.find((candidate) => candidate.id && tabVideoId(candidate.url) === videoId);
-  if (!tab?.id) return null;
-  return readYouTubeTranscript(tab.id, videoId);
-}
-
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg.type === "GET_YOUTUBE_TRANSCRIPT") {
@@ -230,12 +209,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         sendResponse(await globalThis.CaptionAidYouTube.fetchTranscript(msg.videoId));
       } catch (error) {
-        try {
-          const tabTranscript = await readOpenYouTubeTranscript(msg.videoId);
-          sendResponse(tabTranscript || { ok: false, error: error.message });
-        } catch (_) {
-          sendResponse({ ok: false, error: error.message });
-        }
+        sendResponse({ ok: false, error: error.message });
       }
       return;
     }
