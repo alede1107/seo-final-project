@@ -12,11 +12,103 @@ const prepareBtn = document.getElementById("prepare");
 const statusEl = document.getElementById("status");
 const preparedEl = document.getElementById("prepared");
 const videoIdEl = document.getElementById("video-id");
+const prepareProgressEl = document.getElementById("prepare-progress");
+const prepareStageEl = document.getElementById("prepare-stage");
+const preparePercentEl = document.getElementById("prepare-percent");
+const prepareProgressTrackEl = document.getElementById("prepare-progress-track");
+const prepareProgressFillEl = document.getElementById("prepare-progress-fill");
 
 let currentTab = null;
 let videoId = null;
 let prepared = false; // true once the whole video is transcribed server-side
 let prepareTimer = null;
+let prepareEstimateTimer = null;
+let prepareEstimateStartedAt = null;
+let prepareProcessingStartedAt = null;
+let preparePhase = null;
+
+function prepareEstimateKey() {
+  return `prepareEstimate:${videoId}`;
+}
+
+async function restorePrepareEstimate() {
+  const key = prepareEstimateKey();
+  const stored = await chrome.storage.session.get(key);
+  const estimate = stored[key];
+  if (!estimate) return;
+
+  prepareEstimateStartedAt = estimate.startedAt || null;
+  prepareProcessingStartedAt = estimate.processingStartedAt || null;
+}
+
+function savePrepareEstimate() {
+  if (!videoId || !prepareEstimateStartedAt) return;
+
+  chrome.storage.session.set({
+    [prepareEstimateKey()]: {
+      startedAt: prepareEstimateStartedAt,
+      processingStartedAt: prepareProcessingStartedAt,
+    },
+  });
+}
+
+function renderPrepareEstimate() {
+  if (!preparePhase || !prepareEstimateStartedAt) return;
+
+  const now = Date.now();
+  let percent;
+  let stage;
+
+  if (preparePhase === "fetching") {
+    const elapsedSeconds = (now - prepareEstimateStartedAt) / 1000;
+    percent = Math.min(35, Math.round(5 + elapsedSeconds * 1.5));
+    stage = "Fetching video audio";
+  } else {
+    const processingStartedAt = prepareProcessingStartedAt || now;
+    const elapsedSeconds = (now - processingStartedAt) / 1000;
+    percent = elapsedSeconds < 75
+      ? Math.round(40 + elapsedSeconds * 0.6)
+      : Math.round(85 + (elapsedSeconds - 75) * 0.15);
+    percent = Math.min(94, percent);
+    stage = percent < 85
+      ? "Transcribing and matching signs"
+      : "Finalizing captions";
+  }
+
+  prepareProgressEl.hidden = false;
+  prepareStageEl.textContent = stage;
+  preparePercentEl.textContent = `${percent}%`;
+  prepareProgressTrackEl.setAttribute("aria-valuenow", String(percent));
+  prepareProgressFillEl.style.width = `${percent}%`;
+}
+
+function startPrepareEstimate(phase) {
+  if (!prepareEstimateStartedAt) prepareEstimateStartedAt = Date.now();
+  if (phase === "processing" && !prepareProcessingStartedAt) {
+    prepareProcessingStartedAt = Date.now();
+  }
+
+  preparePhase = phase;
+  savePrepareEstimate();
+  renderPrepareEstimate();
+
+  if (!prepareEstimateTimer) {
+    prepareEstimateTimer = setInterval(renderPrepareEstimate, 500);
+  }
+}
+
+function stopPrepareEstimate({ clearSaved = false } = {}) {
+  if (prepareEstimateTimer) clearInterval(prepareEstimateTimer);
+  prepareEstimateTimer = null;
+  preparePhase = null;
+  prepareProgressEl.hidden = true;
+
+  if (clearSaved && videoId) {
+    chrome.storage.session.remove(prepareEstimateKey());
+    prepareEstimateStartedAt = null;
+    prepareProcessingStartedAt = null;
+  }
+}
 
 function extractVideoId(url) {
   try {
@@ -49,7 +141,10 @@ async function init() {
     statusEl.classList.add("recording");
   }
 
-  if (videoId) refreshPrepared();
+  if (videoId) {
+    await restorePrepareEstimate();
+    await refreshPrepared();
+  }
 }
 
 // Reflect the server-side prepare state: if the video is already transcribed,
@@ -58,14 +153,14 @@ async function refreshPrepared() {
   try {
     const res = await fetch(`${BACKEND}/prepare/${encodeURIComponent(videoId)}`);
     if (!res.ok) return;
-    const { status } = await res.json();
-    applyPreparedStatus(status);
+    const data = await res.json();
+    applyPreparedStatus(data.status, data.error);
   } catch (_) {
     // backend down — leave the live-capture path available.
   }
 }
 
-function applyPreparedStatus(status) {
+function applyPreparedStatus(status, error = null) {
   if (status === "ready") {
     prepared = true;
     preparedEl.textContent = "Captions ready — no capture needed.";
@@ -74,19 +169,25 @@ function applyPreparedStatus(status) {
     prepareBtn.textContent = "Captions prepared";
     startBtn.textContent = "Show captions";
     stopPreparePolling();
+    stopPrepareEstimate({ clearSaved: true });
   } else if (status === "preparing") {
     prepared = false;
     preparedEl.textContent = "Preparing captions…";
     preparedEl.classList.remove("ready");
     prepareBtn.disabled = true;
+    startPrepareEstimate("processing");
     startPreparePolling();
   } else {
     // "none" or error — offer prepare; live capture stays the default.
     prepared = false;
-    preparedEl.textContent = status === "error" ? "Prepare failed — retry or capture live." : "";
+    preparedEl.textContent = status === "error"
+      ? `Prepare failed: ${error || "retry or capture live."}`
+      : "";
     preparedEl.classList.remove("ready");
     prepareBtn.disabled = false;
     prepareBtn.textContent = "Prepare captions";
+    stopPreparePolling();
+    stopPrepareEstimate({ clearSaved: true });
   }
 }
 
@@ -101,6 +202,9 @@ function stopPreparePolling() {
 }
 
 prepareBtn.addEventListener("click", async () => {
+  prepareEstimateStartedAt = Date.now();
+  prepareProcessingStartedAt = null;
+  startPrepareEstimate("fetching");
   prepareBtn.disabled = true;
   preparedEl.textContent = "Requesting…";
   try {
@@ -110,10 +214,12 @@ prepareBtn.addEventListener("click", async () => {
       body: JSON.stringify({ video_id: videoId }),
     });
     const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Caption preparation failed");
     applyPreparedStatus(data.status || "preparing");
   } catch (err) {
     preparedEl.textContent = `Error: ${err.message}`;
     prepareBtn.disabled = false;
+    stopPrepareEstimate({ clearSaved: true });
   }
 });
 

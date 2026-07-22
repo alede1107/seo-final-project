@@ -59,6 +59,9 @@ if (!window.__captionAidLoaded) {
                   background: #2b2b33; color: #cfe6ff; border: 1px solid #3a3a44;
                   border-radius: 5px; padding: 2px 7px; cursor: pointer; }
         .toggle:hover { background: #34343d; }
+        .hide { font-size: 10px; background: #2b2b33; color: #d8d8df; border: 1px solid #3a3a44;
+                border-radius: 5px; padding: 2px 7px; cursor: pointer; }
+        .hide:hover { background: #34343d; }
         .lag { font-size: 11px; color: #ffcb6b; }
         .clips { border-bottom: 1px solid #333; padding: 8px; display: none; flex-direction: column;
                  align-items: center; gap: 4px; background: #141418; flex-shrink: 0; }
@@ -80,6 +83,7 @@ if (!window.__captionAidLoaded) {
           <b>CaptionAid</b>
           <span class="lag" id="lag"></span>
           <button class="toggle" id="toggle" title="Toggle ASL gloss / English">ASL</button>
+          <button class="hide" id="hide" type="button">Hide</button>
         </div>
         <div class="clips" id="clips">
           <video class="clipvid" id="clipvid" muted playsinline></video>
@@ -91,21 +95,53 @@ if (!window.__captionAidLoaded) {
     const listEl = root.getElementById("list");
     const lagEl = root.getElementById("lag");
     const toggleEl = root.getElementById("toggle");
+    const hideEl = root.getElementById("hide");
     const clipsEl = root.getElementById("clips");
     const clipVid = root.getElementById("clipvid");
     const clipLabel = root.getElementById("cliplabel");
     makeDraggable(host, root.querySelector(".bar"));
 
-    ui = { host, root, listEl, lagEl, toggleEl, clipsEl, clipVid, clipLabel, empty: true };
+    const launcher = document.createElement("button");
+    launcher.type = "button";
+    launcher.textContent = "CaptionAid";
+    launcher.style.cssText =
+      "position:fixed;right:24px;top:80px;z-index:2147483647;display:none;" +
+      "background:#1d1d22;color:#f2f2f2;border:1px solid #333;border-radius:999px;" +
+      "padding:8px 12px;font:12px/1.2 system-ui,sans-serif;cursor:pointer;" +
+      "box-shadow:0 8px 28px rgba(0,0,0,.35);";
+    document.documentElement.appendChild(launcher);
+
+    ui = {
+      host,
+      root,
+      listEl,
+      lagEl,
+      toggleEl,
+      hideEl,
+      clipsEl,
+      clipVid,
+      clipLabel,
+      launcher,
+      empty: true,
+    };
 
     // A click on the toggle must not start a drag on the bar.
     toggleEl.addEventListener("mousedown", (e) => e.stopPropagation());
     toggleEl.addEventListener("click", () => setMode(mode === "asl" ? "en" : "asl"));
+    hideEl.addEventListener("mousedown", (e) => e.stopPropagation());
+    hideEl.addEventListener("click", () => setOverlayVisible(false));
+    launcher.addEventListener("click", () => setOverlayVisible(true));
 
     // Advance the clip queue when the current clip finishes.
     clipVid.addEventListener("ended", playNextClip);
 
     return ui;
+  }
+
+  function setOverlayVisible(visible) {
+    const overlay = ensureOverlay();
+    overlay.host.style.display = visible ? "block" : "none";
+    overlay.launcher.style.display = visible ? "none" : "block";
   }
 
   // --- Caption text mode (ASL gloss vs English) --------------------------
@@ -200,6 +236,7 @@ if (!window.__captionAidLoaded) {
   let clipTimer = null;
   let activeSeg = null; // the segment whose clips are currently queued
   let clipIdx = 0;
+  let clipQueueComplete = false;
 
   function registerSegment(chunk) {
     const clips = Array.isArray(chunk.clips) ? chunk.clips : [];
@@ -228,6 +265,7 @@ if (!window.__captionAidLoaded) {
   function playSegment(seg) {
     activeSeg = seg;
     clipIdx = 0;
+    clipQueueComplete = false;
     playNextClip();
   }
 
@@ -236,7 +274,13 @@ if (!window.__captionAidLoaded) {
     const clips = activeSeg.clips || [];
     if (clipIdx >= clips.length) {
       // Queue exhausted — hold until the active segment changes.
+      clipQueueComplete = true;
       ui.clipLabel.textContent = clips.length ? "" : "—";
+      if (!clips.length) {
+        ui.clipVid.pause();
+        ui.clipVid.removeAttribute("src");
+        ui.clipVid.load();
+      }
       return;
     }
     const clip = clips[clipIdx];
@@ -283,7 +327,7 @@ if (!window.__captionAidLoaded) {
     const seg = activeSegmentFor(t);
     if (seg && seg !== activeSeg) {
       playSegment(seg); // segment changed — restart its clip queue
-    } else if (ui.clipVid.paused && ui.clipVid.src) {
+    } else if (!clipQueueComplete && ui.clipVid.paused && ui.clipVid.src) {
       ui.clipVid.play().catch(() => {}); // resume after the page video un-paused
     }
   }
@@ -330,7 +374,9 @@ if (!window.__captionAidLoaded) {
     segments.length = 0;
     activeSeg = null;
     clipIdx = 0;
+    clipQueueComplete = false;
     ensureOverlay();
+    setOverlayVisible(true);
     loadCache(); // instant history from prior sessions (cache-hit path)
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(pollOnce, POLL_MS);
