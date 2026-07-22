@@ -320,6 +320,7 @@ def _download_audio(video_id):
         "retries": 3,
         "socket_timeout": 30,
         "js_runtimes": js_runtimes,
+        "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
     }
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
@@ -415,6 +416,7 @@ def _download_youtube_captions(video_id):
         "extractor_retries": 3,
         "retries": 3,
         "socket_timeout": 30,
+        "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
     }
     js_runtimes = _youtube_js_runtimes()
     if js_runtimes:
