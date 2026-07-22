@@ -193,9 +193,10 @@ redeploy so the new values reach the running app.
 7. Press **Stop CaptionAid** when finished. Keep the YouTube tab open for a few
    seconds so the final caption can appear.
 
-The extension automatically uses `http://localhost:5001` when a local backend
-is running. Otherwise it uses `https://seo-final-project.vercel.app`, so the
-same unpacked extension works for local development and the deployed demo.
+The extension uses `https://seo-final-project.vercel.app` by default so its
+captions always appear in the deployed companion website. For local extension
+development, set `captionAidBackend` in `chrome.storage.local` to
+`http://localhost:5001`; clear that override before the deployed demo.
 
 ## Verify
 

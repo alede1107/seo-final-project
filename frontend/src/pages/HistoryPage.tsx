@@ -37,33 +37,46 @@ export default function HistoryPage() {
   });
 
   useEffect(() => {
-    const controller = new AbortController();
-    setLoadingSessions(true);
-    getSessions(controller.signal)
-      .then((items) => {
-        setSessions(items);
-        setError("");
-      })
-      .catch((loadError: unknown) => {
-        if (!controller.signal.aborted) {
+    let cancelled = false;
+    let inFlight = false;
+    let timer = 0;
+
+    const load = async (initial = false) => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      if (initial) setLoadingSessions(true);
+      try {
+        const items = await getSessions();
+        if (!cancelled) {
+          setSessions(items);
+          setError("");
+        }
+      } catch (loadError: unknown) {
+        if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : "Could not load caption history.");
         }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoadingSessions(false);
-      });
-    return () => controller.abort();
-  }, [refreshKey]);
-
-  useEffect(() => {
-    const refresh = () => setRefreshKey((current) => current + 1);
-    const timer = window.setInterval(refresh, 5000);
-    window.addEventListener("focus", refresh);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refresh);
+      } finally {
+        inFlight = false;
+        if (!cancelled) {
+          setLoadingSessions(false);
+          timer = window.setTimeout(() => void load(), 5000);
+        }
+      }
     };
-  }, []);
+
+    const refreshOnFocus = () => {
+      window.clearTimeout(timer);
+      void load();
+    };
+
+    void load(true);
+    window.addEventListener("focus", refreshOnFocus);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", refreshOnFocus);
+    };
+  }, [refreshKey]);
 
   const selected = useMemo(
     () =>
@@ -243,7 +256,7 @@ export default function HistoryPage() {
                 {!loadingSessions && !visibleSessions.length && (
                   <div className="px-4 py-8 text-center">
                     <p className="text-sm font-bold tracking-tight text-neutral-300">No videos yet</p>
-                    <p className="mt-1 text-xs leading-5 text-neutral-600">Prepare a public YouTube video to begin.</p>
+                    <p className="mt-1 text-xs leading-5 text-neutral-600">Open a YouTube video and start CaptionAid to begin.</p>
                   </div>
                 )}
                 <div className="divide-y divide-white/10">
