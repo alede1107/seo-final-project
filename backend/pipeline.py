@@ -36,7 +36,10 @@ import requests
 from services.chunk_processor import match_gloss
 from backend.text_to_gloss import to_gloss
 
-DB_PATH = Path(__file__).resolve().parent / "captions.db"
+DB_PATH = Path(
+    os.environ.get("CAPTION_DB_PATH", Path(__file__).resolve().parent / "captions.db")
+)
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 ASSEMBLYAI_KEY = os.environ.get("ASSEMBLYAI_API_KEY")
 AAI_BASE = "https://api.assemblyai.com/v2"
 PREPARE_PIPELINE_VERSION = 2

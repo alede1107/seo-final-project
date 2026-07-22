@@ -5,7 +5,7 @@ or ``python app.py`` (Windows).
 """
 
 try:
-    from backend.app import run
+    from backend.app import app, run
 except ModuleNotFoundError as exc:
     raise SystemExit(
         f"Missing Python dependency '{exc.name}'. "

@@ -117,7 +117,8 @@ The website stays focused on two real workflows:
   vocabulary.
 
 Deleting a History item removes its prepared transcript and matched clips from
-the local database. It does not delete live-capture sessions or S3 audio.
+the local database. It does not delete live-capture sessions. In the deployed
+S3-backed app it also removes that video's stored source audio and job files.
 
 The browser extension remains the third user-facing surface and uses the same
 backend and caption records.
@@ -134,6 +135,46 @@ python3 app.py
 ```
 
 Then open `http://127.0.0.1:5001`.
+
+## Deploy To Vercel
+
+The repository includes `Dockerfile.vercel`, so the companion website and
+Flask API deploy together as one Vercel project and share one URL. The image
+builds the React site, includes Node 22 for yt-dlp, runs Python 3.12, and serves
+the production build through Gunicorn.
+
+Production does not use SQLite for prepared videos. Vercel instances are
+temporary, so preparation jobs and caption results are stored in the existing
+S3 bucket under `captionaid/v2/`. No additional database is required.
+
+1. Push this branch to the repository hosted on GitHub.
+2. In Vercel, choose **Add New > Project** and import the repository.
+3. Keep the project root set to the repository root. Do not set a custom build
+   command or output directory; Vercel will detect `Dockerfile.vercel`.
+4. Add these environment variables for Production and Preview:
+
+```dotenv
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_REGION=us-east-2
+S3_BUCKET=...
+ASSEMBLYAI_API_KEY=...
+GEMINI_API_KEY=...
+```
+
+`GEMINI_API_KEY` is optional. The AWS identity needs `s3:GetObject`,
+`s3:PutObject`, `s3:DeleteObject`, and `s3:ListBucket` access to the configured
+bucket. Do not add `CAPTION_STORE`; the Vercel image sets it automatically.
+
+5. Press **Deploy**. After the deployment is ready, open `/api/health` on its
+   URL. A correctly configured deployment responds with `{"ok":true}`.
+6. Open the deployment URL, prepare a short public YouTube video, and leave the
+   preparation dialog open until it finishes. The browser polls the API, which
+   safely resumes transcription and sign matching across Vercel invocations.
+
+If `/api/health` returns `503`, its `missing` list names the environment
+variables that still need to be added. After changing variables in Vercel,
+redeploy so the new values reach the running app.
 
 ## Load The Extension
 
