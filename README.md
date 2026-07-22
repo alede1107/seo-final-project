@@ -149,8 +149,10 @@ S3 bucket under `captionaid/v2/`. No additional database is required.
 
 1. Push this branch to the repository hosted on GitHub.
 2. In Vercel, choose **Add New > Project** and import the repository.
-3. Keep the project root set to the repository root. Do not set a custom build
-   command or output directory; Vercel will detect `Dockerfile.vercel`.
+3. In **Settings > Build and Deployment**, set the Framework Preset to
+   **Services**. Keep the project root set to the repository root. Do not set a
+   custom build command or output directory. `vercel.json` explicitly routes
+   the deployment to `Dockerfile.vercel`.
 4. Add these environment variables for Production and Preview:
 
 ```dotenv
