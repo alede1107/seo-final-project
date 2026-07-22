@@ -79,7 +79,7 @@
   }
 
   function selectTrack(playerResponse) {
-    const tracks = playerResponse.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+    const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
     const english = tracks.filter((track) =>
       String(track.languageCode || "").toLowerCase().startsWith("en"),
     );
@@ -183,7 +183,14 @@
   }
 
   async function fetchPlayerResponse(videoId) {
-    const { html, playerResponse: webPlayerResponse } = await fetchWatchPage(videoId);
+    let html = "";
+    let webPlayerResponse = null;
+    try {
+      const watchPage = await fetchWatchPage(videoId);
+      html = watchPage.html;
+      webPlayerResponse = watchPage.playerResponse;
+    } catch (_) {}
+
     const visitorData = extractVisitorData(html);
 
     try {
@@ -201,11 +208,17 @@
     const { track, translated } = selectTrack(playerResponse);
     if (!track?.baseUrl) throw new Error("This video has no usable YouTube caption track");
 
-    const trackUrl = new URL(track.baseUrl);
-    trackUrl.searchParams.set("fmt", "json3");
-    if (translated) trackUrl.searchParams.set("tlang", "en");
+    // YouTube signs the full timed-text query. Rebuilding it with URLSearchParams
+    // can change its encoding and turn a valid caption response into an empty body.
+    let trackUrl = track.baseUrl;
+    if (/[?&]fmt=/.test(trackUrl)) {
+      trackUrl = trackUrl.replace(/([?&])fmt=[^&]*/i, "$1fmt=json3");
+    } else {
+      trackUrl += `${trackUrl.includes("?") ? "&" : "?"}fmt=json3`;
+    }
+    if (translated && !/[?&]tlang=/.test(trackUrl)) trackUrl += "&tlang=en";
 
-    const response = await fetch(trackUrl.toString(), {
+    const response = await fetch(trackUrl, {
       credentials: "include",
       cache: "no-store",
     });

@@ -24,6 +24,17 @@ function stageLabel(stage?: string) {
   }[stage || ""] || "Preparing captions";
 }
 
+function preparationError(bridgeMessage: string, serverMessage: string) {
+  const combined = `${bridgeMessage} ${serverMessage}`;
+  if (/video (?:is )?unavailable|private video|video has been removed/i.test(combined)) {
+    return "This YouTube video is unavailable or private. Use a public, playable video with captions.";
+  }
+  if (/sign in to confirm|cookies-from-browser|empty caption track/i.test(combined)) {
+    return "CaptionAid could not read a usable transcript for this video. Make sure it is public, playable, and has YouTube captions.";
+  }
+  return `${bridgeMessage}. Reload the extension and refresh this page. ${serverMessage}`;
+}
+
 export default function PrepareDialog({ onPrepared }: PrepareDialogProps) {
   const backend = useBackendStatus();
   const onPreparedRef = useRef(onPrepared);
@@ -140,9 +151,7 @@ export default function PrepareDialog({ onPrepared }: PrepareDialogProps) {
           const serverMessage = serverError instanceof Error
             ? serverError.message
             : "The server could not load this video";
-          throw new Error(
-            `${bridgeMessage}. Reload the extension and refresh this page. ${serverMessage}`,
-          );
+          throw new Error(preparationError(bridgeMessage, serverMessage));
         }
       }
       if (status.status === "ready") {
