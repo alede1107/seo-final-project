@@ -45,7 +45,7 @@ export default function DeletePreparedDialog({
       <AlertDialog.Trigger asChild>
         <button
           type="button"
-          className="focus-ring h-9 rounded-md border border-red-400/20 px-3 text-xs font-bold text-red-300/80 transition-colors hover:bg-red-400/10 hover:text-red-200"
+          className="focus-ring h-9 rounded-md border border-red-400/20 px-3 text-xs font-bold text-red-600 transition-colors hover:bg-red-400/10 hover:text-red-700 dark:text-red-300/80 dark:hover:text-red-200"
         >
           Delete
         </button>
@@ -53,28 +53,28 @@ export default function DeletePreparedDialog({
 
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="fixed inset-0 z-50 bg-black/80" />
-        <AlertDialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-white/10 bg-neutral-900 p-5 text-neutral-100 outline-none">
-          <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-red-300/70">Delete prepared video</p>
+        <AlertDialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface-strong p-5 text-foreground outline-none">
+          <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-red-500 dark:text-red-300/70">Delete prepared video</p>
           <AlertDialog.Title className="mt-2 text-base font-extrabold tracking-tight">
             Remove this video from History?
           </AlertDialog.Title>
-          <AlertDialog.Description className="mt-2 text-sm leading-6 text-neutral-500">
-            <span className="block font-semibold text-neutral-300">{title}</span>
+          <AlertDialog.Description className="mt-2 text-sm leading-6 text-muted">
+            <span className="block font-semibold text-foreground">{title}</span>
             This deletes the video's transcript, gloss, matched sign queue, and captured audio. The shared sign library stays untouched.
           </AlertDialog.Description>
 
           {error && (
-            <p className="mt-4 border border-red-400/20 bg-red-400/5 px-3 py-2 text-xs leading-5 text-red-200/70" role="alert">
+            <p className="mt-4 border border-red-400/20 bg-red-400/5 px-3 py-2 text-xs leading-5 text-red-700 dark:text-red-200" role="alert">
               {error}
             </p>
           )}
 
-          <div className="mt-5 flex justify-end gap-2 border-t border-white/10 pt-4">
+          <div className="mt-5 flex justify-end gap-2 border-t border-border pt-4">
             <AlertDialog.Cancel asChild>
               <button
                 type="button"
                 disabled={deleting}
-                className="focus-ring h-9 rounded-md border border-white/10 px-3 text-xs font-bold text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                className="focus-ring h-9 rounded-md border border-border px-3 text-xs font-bold text-muted transition-colors hover:bg-surface-active hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Cancel
               </button>
@@ -84,7 +84,7 @@ export default function DeletePreparedDialog({
                 type="button"
                 disabled={deleting}
                 onClick={remove}
-                className="focus-ring h-9 rounded-md bg-red-400 px-3 text-xs font-extrabold text-neutral-950 transition-colors hover:bg-red-300 disabled:cursor-wait disabled:opacity-60"
+                className="focus-ring h-9 rounded-md bg-red-500 px-3 text-xs font-extrabold text-white transition-colors hover:bg-red-600 disabled:cursor-wait disabled:opacity-60"
               >
                 {deleting ? "Deleting..." : "Delete video"}
               </button>

@@ -169,29 +169,29 @@ export default function SignSequencePlayer({
 
   if (!clip) {
     return (
-      <section className="grid min-h-64 place-items-center border border-white/10 bg-neutral-900/40 px-6 text-center" aria-label={title}>
+      <section className="grid min-h-64 place-items-center border border-border bg-surface-strong/40 px-6 text-center" aria-label={title}>
         <div>
-          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-neutral-700">ASL clip</span>
-          <h2 className="mt-2 text-sm font-extrabold tracking-tight text-neutral-300">{title}</h2>
-          <p className="mt-1 max-w-xs text-xs leading-5 text-neutral-600">{emptyMessage}</p>
+          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">ASL clip</span>
+          <h2 className="mt-2 text-sm font-extrabold tracking-tight text-foreground">{title}</h2>
+          <p className="mt-1 max-w-xs text-xs leading-5 text-muted">{emptyMessage}</p>
         </div>
       </section>
     );
   }
 
   return (
-    <section className="overflow-hidden rounded-md border border-white/10 bg-neutral-900/50" aria-label={title}>
-      <div className="flex h-12 items-center justify-between border-b border-white/10 px-3">
+    <section className="overflow-hidden rounded-md border border-border bg-surface-strong/50" aria-label={title}>
+      <div className="flex h-12 items-center justify-between border-b border-border px-3">
         <div className="min-w-0">
-          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-600">Now signing</p>
-          <h2 className="truncate text-sm font-extrabold tracking-tight text-neutral-100">{clip.token}</h2>
+          <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">Now signing</p>
+          <h2 className="truncate text-sm font-extrabold tracking-tight text-foreground">{clip.token}</h2>
         </div>
-        <span className="font-mono text-[10px] text-neutral-500">
+        <span className="font-mono text-[11px] text-muted">
           {index + 1} / {clips.length}
         </span>
       </div>
 
-      <div className="aspect-[4/3] border-b border-white/10 bg-black">
+      <div className="aspect-[4/3] border-b border-border bg-black">
         {[
           ...clips.map((item, itemIndex) => ({
             clip: item,
@@ -255,13 +255,13 @@ export default function SignSequencePlayer({
         })}
       </div>
 
-      <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
+      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={() => moveTo(index - 1)}
             disabled={index === 0}
-            className="focus-ring h-8 rounded-md border border-white/10 px-2.5 text-xs font-semibold text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+            className="focus-ring h-10 rounded-md border border-border px-2.5 text-xs font-semibold text-muted transition-colors hover:bg-surface-active hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
           >
             Previous
           </button>
@@ -269,17 +269,17 @@ export default function SignSequencePlayer({
             type="button"
             onClick={() => moveTo(index + 1)}
             disabled={index === clips.length - 1}
-            className="focus-ring h-8 rounded-md border border-white/10 px-2.5 text-xs font-semibold text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+            className="focus-ring h-10 rounded-md border border-border px-2.5 text-xs font-semibold text-muted transition-colors hover:bg-surface-active hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
           >
             Next
           </button>
         </div>
-        <label className="flex items-center gap-2 font-mono text-[10px] text-neutral-600">
+        <label className="flex items-center gap-2 font-mono text-[11px] text-muted">
           Speed
           <select
             value={speedMode}
             onChange={(event) => setSpeedMode(event.target.value as SpeedMode)}
-            className="focus-ring h-8 rounded-md border border-white/10 bg-neutral-950 px-2 text-[10px] text-neutral-300"
+            className="focus-ring h-10 rounded-md border border-border bg-background px-2 text-[11px] text-foreground"
           >
             <option value="fit">Fit</option>
             <option value="0.5">0.5x</option>
@@ -293,20 +293,20 @@ export default function SignSequencePlayer({
       {clips.length > 1 && (
         <ScrollArea.Root className="max-h-40 overflow-hidden">
           <ScrollArea.Viewport className="max-h-40 w-full">
-            <ol className="divide-y divide-white/10">
+            <ol className="divide-y divide-border">
               {clips.map((item, itemIndex) => (
                 <li key={`${item.token}-${itemIndex}`}>
                   <button
                     type="button"
                     className={`focus-ring flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition-colors ${
                       itemIndex === index
-                        ? "bg-neutral-800 text-white"
-                        : "text-neutral-500 hover:bg-neutral-800/50 hover:text-neutral-200"
+                        ? "bg-surface-active text-foreground"
+                        : "text-muted hover:bg-surface-strong/50 hover:text-foreground"
                     }`}
                     aria-current={itemIndex === index ? "true" : undefined}
                     onClick={() => moveTo(itemIndex)}
                   >
-                    <span className="font-mono text-[9px] text-neutral-600">
+                    <span className="font-mono text-[11px] text-muted">
                       {String(itemIndex + 1).padStart(2, "0")}
                     </span>
                     <span className="font-semibold tracking-tight">{item.token}</span>
@@ -315,8 +315,8 @@ export default function SignSequencePlayer({
               ))}
             </ol>
           </ScrollArea.Viewport>
-          <ScrollArea.Scrollbar orientation="vertical" className="flex w-2 bg-neutral-950 p-0.5">
-            <ScrollArea.Thumb className="relative flex-1 rounded-full bg-neutral-700" />
+          <ScrollArea.Scrollbar orientation="vertical" className="flex w-2 bg-background p-0.5">
+            <ScrollArea.Thumb className="relative flex-1 rounded-full bg-surface-active" />
           </ScrollArea.Scrollbar>
         </ScrollArea.Root>
       )}

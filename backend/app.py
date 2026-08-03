@@ -60,7 +60,13 @@ else:  # Supports `python backend/app.py` in addition to `python -m backend.app`
     import pipeline
 
 from backend.cloud_prepared import S3PreparedStore
-from services.chunk_processor import load_word_map
+from backend.personal_clips_store import PersonalClipStore
+from services.chunk_processor import _normalize, load_word_map
+
+if __package__:
+    from . import auth
+else:
+    import auth
 
 app = Flask(__name__, static_folder=None)
 
@@ -97,7 +103,22 @@ if CLOUD_STORE_ENABLED and S3_BUCKET and pipeline.ASSEMBLYAI_KEY:
         batch_size=cloud_batch_size,
     )
 
+# Personal-clip metadata store. Independent of the AssemblyAI-gated caption
+# store: personal clips only need S3 (media) + a durable metadata home. Local
+# dev keeps metadata in SQLite (pipeline); stateless runtimes use S3 JSON.
+personal_store = None
+if CLOUD_STORE_ENABLED and S3_BUCKET:
+    personal_store = PersonalClipStore(
+        s3,
+        S3_BUCKET,
+        prefix=os.environ.get("CAPTION_STORE_PREFIX", "captionaid/v2"),
+    )
+
 SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+
+# Personal clips are recorded (webcam) or uploaded; keep the accepted set small.
+CLIP_MIME_EXT = {"video/webm": "webm", "video/mp4": "mp4"}
+MAX_CLIP_BYTES = 15 * 1024 * 1024  # hard server cap; UI targets <=10 MB
 
 pipeline.init_db()
 
@@ -108,7 +129,7 @@ def add_cors(response):
     # whose generated IDs differ on every teammate's machine.
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-App-Token"
     if request.path.startswith("/assets/"):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
@@ -156,6 +177,117 @@ def health():
                 }
             ), 503
     return jsonify({"ok": True})
+
+
+def _resolve_uid(app_token):
+    """Map an opaque app_token to a Firebase uid via the active store."""
+    if cloud_store is not None and hasattr(cloud_store, "uid_for_token"):
+        return cloud_store.uid_for_token(app_token)
+    return pipeline.uid_for_token(app_token)
+
+
+def _current_uid():
+    """Return the signed-in uid for this request, or None for a guest."""
+    return auth.verify_request(_resolve_uid)
+
+
+def _presign_get(key):
+    """Fresh pre-signed GET URL for a private S3 object (1h, like /upload)."""
+    return s3.generate_presigned_url(
+        "get_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=3600
+    )
+
+
+# Personal-clip metadata operations route to the S3 store in stateless mode and
+# to SQLite (pipeline) locally, mirroring the caption store split.
+def _add_personal_clip(uid, word, s3_key, mime, clip_id, preferred=False):
+    store = personal_store if personal_store is not None else pipeline
+    return store.add_personal_clip(uid, word, s3_key, mime, clip_id, preferred=preferred)
+
+
+def _list_personal_clips(uid):
+    store = personal_store if personal_store is not None else pipeline
+    return store.list_personal_clips(uid)
+
+
+def _get_personal_clip(uid, clip_id):
+    store = personal_store if personal_store is not None else pipeline
+    return store.get_personal_clip(uid, clip_id)
+
+
+def _set_preferred(uid, clip_id):
+    store = personal_store if personal_store is not None else pipeline
+    return store.set_preferred(uid, clip_id)
+
+
+def _delete_personal_clip(uid, clip_id):
+    store = personal_store if personal_store is not None else pipeline
+    return store.delete_personal_clip(uid, clip_id)
+
+
+def _personalize(chunks):
+    """Merge the signed-in user's personal clips into caption chunks. Guests and
+    users with no personal clips get the chunks back unchanged."""
+    uid = _current_uid()
+    if not uid:
+        return chunks
+    try:
+        clips = _list_personal_clips(uid)
+    except (BotoCoreError, ClientError) as e:
+        app.logger.error("personal clip read failed: %s", e)
+        return chunks
+    if not clips:
+        return chunks
+    return pipeline.personalize_chunks(
+        chunks, clips, _presign_get, default_map=load_word_map()
+    )
+
+
+def _clip_payload(clip):
+    """Client-facing personal clip with a fresh pre-signed URL."""
+    return {
+        "clip_id": clip["clip_id"],
+        "word": clip["word"],
+        "mime": clip.get("mime"),
+        "preferred": bool(clip.get("preferred")),
+        "url": _presign_get(clip["s3_key"]),
+    }
+
+
+@app.route("/api/session-token", methods=["POST"])
+def session_token():
+    """Exchange a Firebase ID token for a stable opaque app token.
+
+    This is the only route that touches Firebase. The returned app_token is what
+    the website and extension send (as X-App-Token) on every later request.
+    """
+    body = request.get_json(silent=True) or {}
+    id_token = (body.get("id_token") or "").strip()
+    if not id_token:
+        return jsonify({"error": "missing id_token"}), 400
+    try:
+        uid = auth.verify_id_token(id_token)
+    except Exception as exc:  # noqa: BLE001 - invalid token / unconfigured.
+        app.logger.warning("session-token verification failed: %s", exc)
+        return jsonify({"error": "invalid or unverifiable id_token"}), 401
+
+    email = (body.get("email") or "").strip()[:320] or None
+    try:
+        if cloud_store is not None and hasattr(cloud_store, "upsert_user"):
+            app_token = cloud_store.upsert_user(uid, email)
+        else:
+            app_token = pipeline.upsert_user(uid, email)
+    except (BotoCoreError, ClientError) as exc:
+        app.logger.error("user store write failed: %s", exc)
+        return jsonify({"error": "account store unavailable"}), 503
+    return jsonify({"app_token": app_token, "email": email})
+
+
+@app.route("/api/me", methods=["GET"])
+def me():
+    """Report whether this request is authenticated (proves the auth chain)."""
+    uid = _current_uid()
+    return jsonify({"uid": uid, "signed_in": uid is not None})
 
 
 def _get_prepared(video_id, *, advance=False):
@@ -726,7 +858,7 @@ def caption_chunk(session_id, chunk_index):
         return jsonify({"error": "caption chunk unavailable"}), 503
     if chunk is None:
         return jsonify({"status": "unknown"}), 404
-    return jsonify(chunk)
+    return jsonify(_personalize([chunk])[0])
 
 
 @app.route("/captions/<session_id>", methods=["GET"])
@@ -742,7 +874,7 @@ def caption_session(session_id):
     except (BotoCoreError, ClientError, requests.RequestException) as e:
         app.logger.error("caption session read failed: %s", e)
         return jsonify({"error": "caption session unavailable"}), 503
-    return jsonify({"session_id": session_id, "chunks": chunks})
+    return jsonify({"session_id": session_id, "chunks": _personalize(chunks)})
 
 
 @app.route("/captions/video/<video_id>", methods=["GET"])
@@ -758,7 +890,7 @@ def caption_video(video_id):
     except (BotoCoreError, ClientError) as e:
         app.logger.error("caption store read failed: %s", e)
         return jsonify({"error": "caption store unavailable"}), 503
-    return jsonify({"video_id": video_id, "chunks": chunks})
+    return jsonify({"video_id": video_id, "chunks": _personalize(chunks)})
 
 
 @app.route("/api/sessions", methods=["GET"])
@@ -866,6 +998,115 @@ def sign_detail(word):
     if not url:
         return jsonify({"error": "sign not found", "word": word}), 404
     return jsonify(_sign_payload(normalized, url))
+
+
+def _normalize_clip_word(raw):
+    """Normalize a gloss word to the dictionary convention and bound its length.
+    Words may contain spaces/apostrophes (phrases), so SAFE_ID does not apply."""
+    word = _normalize(str(raw or ""))
+    if not word or len(word) > 80:
+        raise ValueError("invalid word")
+    return word
+
+
+@app.route("/api/personal-clips", methods=["GET"])
+def list_personal_clips_route():
+    uid = _current_uid()
+    if not uid:
+        return jsonify({"error": "authentication required"}), 401
+    if not S3_BUCKET:
+        return jsonify({"error": "server misconfigured: S3_BUCKET not set"}), 500
+    try:
+        clips = _list_personal_clips(uid)
+    except (BotoCoreError, ClientError) as e:
+        app.logger.error("personal clip list failed: %s", e)
+        return jsonify({"error": "personal clip store unavailable"}), 503
+    return jsonify({"clips": [_clip_payload(c) for c in clips]})
+
+
+@app.route("/api/personal-clips", methods=["POST"])
+def create_personal_clip():
+    uid = _current_uid()
+    if not uid:
+        return jsonify({"error": "authentication required"}), 401
+    if not S3_BUCKET:
+        return jsonify({"error": "server misconfigured: S3_BUCKET not set"}), 500
+
+    video = request.files.get("video")
+    if video is None:
+        return jsonify({"error": "missing video file"}), 400
+    try:
+        word = _normalize_clip_word(request.form.get("word", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    mime = (video.mimetype or "").split(";")[0].strip().lower()
+    ext = CLIP_MIME_EXT.get(mime)
+    if ext is None:
+        return jsonify({"error": "unsupported clip type; use webm or mp4"}), 415
+
+    data = video.read()
+    if not data:
+        return jsonify({"error": "empty video file"}), 400
+    if len(data) > MAX_CLIP_BYTES:
+        return jsonify({"error": "clip exceeds 15 MB limit"}), 413
+
+    import secrets
+
+    clip_id = secrets.token_urlsafe(16)
+    s3_key = f"personal/{uid}/{clip_id}.{ext}"
+    try:
+        s3.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=data, ContentType=mime)
+        clip = _add_personal_clip(uid, word, s3_key, mime, clip_id)
+    except (BotoCoreError, ClientError) as e:
+        app.logger.error("personal clip upload failed: %s", e)
+        return jsonify({"error": "personal clip store unavailable"}), 503
+    return jsonify(_clip_payload(clip)), 201
+
+
+@app.route("/api/personal-clips/<clip_id>", methods=["PATCH"])
+def prefer_personal_clip(clip_id):
+    uid = _current_uid()
+    if not uid:
+        return jsonify({"error": "authentication required"}), 401
+    try:
+        _validate(clip_id, "clip_id")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    body = request.get_json(silent=True) or {}
+    if body.get("preferred") is not True:
+        return jsonify({"error": "only {\"preferred\": true} is supported"}), 400
+    try:
+        clip = _set_preferred(uid, clip_id)
+    except (BotoCoreError, ClientError) as e:
+        app.logger.error("personal clip prefer failed: %s", e)
+        return jsonify({"error": "personal clip store unavailable"}), 503
+    if clip is None:
+        return jsonify({"error": "clip not found"}), 404
+    return jsonify(_clip_payload(clip))
+
+
+@app.route("/api/personal-clips/<clip_id>", methods=["DELETE"])
+def delete_personal_clip_route(clip_id):
+    uid = _current_uid()
+    if not uid:
+        return jsonify({"error": "authentication required"}), 401
+    try:
+        _validate(clip_id, "clip_id")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    try:
+        deleted = _delete_personal_clip(uid, clip_id)
+        if deleted is None:
+            return jsonify({"error": "clip not found"}), 404
+        if S3_BUCKET and deleted.get("s3_key"):
+            s3.delete_object(Bucket=S3_BUCKET, Key=deleted["s3_key"])
+    except (BotoCoreError, ClientError) as e:
+        app.logger.error("personal clip delete failed: %s", e)
+        return jsonify({"error": "personal clip store unavailable"}), 503
+    return jsonify({"ok": True, "clip_id": clip_id})
 
 
 @app.route("/api/<path:_missing>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

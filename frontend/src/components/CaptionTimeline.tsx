@@ -20,10 +20,10 @@ export default function CaptionTimeline({
 }: CaptionTimelineProps) {
   if (!chunks.length) {
     return (
-      <div className="grid min-h-48 place-items-center border border-white/10 bg-neutral-950/40 px-6 text-center">
+      <div className="grid min-h-48 place-items-center border border-border bg-background/40 px-6 text-center">
         <div>
-          <p className="text-sm font-bold tracking-tight text-neutral-300">No transcript yet</p>
-          <p className="mt-1 max-w-sm text-xs leading-5 text-neutral-600">{emptyMessage}</p>
+          <p className="text-sm font-bold tracking-tight text-foreground">No transcript yet</p>
+          <p className="mt-1 max-w-sm text-xs leading-5 text-muted">{emptyMessage}</p>
         </div>
       </div>
     );
@@ -39,19 +39,19 @@ export default function CaptionTimeline({
             const secondary = mode === "asl" ? chunk.text : gloss;
 
             return (
-              <li key={`${chunk.session_id}-${chunk.chunk_index}`} className="border-b border-white/10 last:border-b-0">
+              <li key={`${chunk.session_id}-${chunk.chunk_index}`} className="border-b border-border last:border-b-0">
                 <button
                   type="button"
                   className={`focus-ring grid w-full grid-cols-[60px_minmax(0,1fr)_44px] gap-3 px-3 py-3 text-left transition-colors sm:grid-cols-[72px_minmax(0,1fr)_52px] ${
                     selectedIndex === index
-                      ? "bg-neutral-800/80"
-                      : "bg-neutral-950/20 hover:bg-neutral-900/80"
+                      ? "bg-surface-active"
+                      : "bg-background/20 hover:bg-surface/80"
                   }`}
                   onClick={() => onSelect(index)}
                   aria-pressed={selectedIndex === index}
                 >
-                  <span className="pt-0.5 font-mono text-[10px] leading-4 text-neutral-600">
-                    <span className="block text-neutral-400">{formatClock(chunk.video_time_offset)}</span>
+                  <span className="pt-0.5 font-mono text-[11px] leading-4 text-muted">
+                    <span className="block text-foreground/70">{formatClock(chunk.video_time_offset)}</span>
                     {formatClock(chunk.video_time_end)}
                   </span>
                   <span className="min-w-0">
@@ -59,7 +59,7 @@ export default function CaptionTimeline({
                       className={`block leading-5 tracking-tight ${
                         mode === "asl"
                           ? "font-mono text-xs font-medium text-accent"
-                          : "text-sm font-semibold text-neutral-200"
+                          : "text-sm font-semibold text-foreground"
                       }`}
                     >
                       {primary || "No transcript text"}
@@ -68,15 +68,15 @@ export default function CaptionTimeline({
                       <span
                         className={`mt-1 block truncate ${
                           mode === "asl"
-                            ? "text-xs text-neutral-600"
-                            : "font-mono text-[10px] uppercase tracking-wide text-neutral-600"
+                            ? "text-xs text-muted"
+                            : "font-mono text-[11px] uppercase tracking-wide text-muted"
                         }`}
                       >
                         {secondary}
                       </span>
                     )}
                   </span>
-                  <span className="pt-0.5 text-right font-mono text-[10px] text-neutral-600">
+                  <span className="pt-0.5 text-right font-mono text-[11px] text-muted">
                     <span className={chunk.clips.length ? "block text-accent" : "block"}>
                       {chunk.clips.length}
                     </span>
@@ -90,9 +90,9 @@ export default function CaptionTimeline({
       </ScrollArea.Viewport>
       <ScrollArea.Scrollbar
         orientation="vertical"
-        className="flex w-2 touch-none select-none border-l border-white/5 bg-neutral-950 p-0.5"
+        className="flex w-2 touch-none select-none border-l border-border/30 bg-background p-0.5"
       >
-        <ScrollArea.Thumb className="relative flex-1 rounded-full bg-neutral-700" />
+        <ScrollArea.Thumb className="relative flex-1 rounded-full bg-surface-active" />
       </ScrollArea.Scrollbar>
     </ScrollArea.Root>
   );

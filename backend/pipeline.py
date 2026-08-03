@@ -99,6 +99,40 @@ def init_db():
             )
             """
         )
+        # Account identity for personal ASL clips. Firebase verifies the user
+        # once at token issuance; `app_token` is a stable opaque key that both
+        # the website and the extension send on every subsequent request.
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                uid        TEXT PRIMARY KEY,
+                app_token  TEXT NOT NULL UNIQUE,
+                email      TEXT,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        # Personal ASL clips: user-supplied signs that fill a missing gloss token
+        # or (when `preferred`) override a default. Multiple clips per
+        # (user_id, word) are allowed; at most one is preferred. `word` is the
+        # normalized gloss token; `s3_key` points at the private media object.
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS personal_clips (
+                clip_id    TEXT PRIMARY KEY,
+                user_id    TEXT NOT NULL,
+                word       TEXT NOT NULL,          -- normalized gloss token
+                s3_key     TEXT NOT NULL,
+                mime       TEXT,
+                preferred  INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        _conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_personal_clips_user "
+            "ON personal_clips (user_id)"
+        )
         # Migrate pre-existing DBs that lack newer columns. Adding a column that
         # already exists raises OperationalError, which we swallow.
         for ddl in (
@@ -114,6 +148,197 @@ def init_db():
             except sqlite3.OperationalError:
                 pass
         _conn.commit()
+
+
+def upsert_user(uid, email=None):
+    """Return the stable app_token for a Firebase uid, creating the row on first
+    sight. The token is generated once and kept stable across logins so the
+    extension (which cannot refresh a Firebase ID token) keeps working."""
+    import secrets
+
+    with _lock:
+        row = _conn.execute(
+            "SELECT app_token FROM users WHERE uid=?", (uid,)
+        ).fetchone()
+        if row is not None:
+            if email:
+                _conn.execute(
+                    "UPDATE users SET email=? WHERE uid=?", (email, uid)
+                )
+                _conn.commit()
+            return row["app_token"]
+        app_token = secrets.token_urlsafe(32)
+        _conn.execute(
+            "INSERT INTO users (uid, app_token, email, created_at) VALUES (?, ?, ?, ?)",
+            (uid, app_token, email, time.time()),
+        )
+        _conn.commit()
+        return app_token
+
+
+def uid_for_token(app_token):
+    """Resolve an opaque app_token back to a Firebase uid, or None if unknown."""
+    if not app_token:
+        return None
+    with _lock:
+        row = _conn.execute(
+            "SELECT uid FROM users WHERE app_token=?", (app_token,)
+        ).fetchone()
+    return row["uid"] if row is not None else None
+
+
+def _personal_clip_to_dict(row):
+    return {
+        "clip_id": row["clip_id"],
+        "user_id": row["user_id"],
+        "word": row["word"],
+        "s3_key": row["s3_key"],
+        "mime": row["mime"],
+        "preferred": bool(row["preferred"]),
+        "created_at": row["created_at"],
+    }
+
+
+def add_personal_clip(user_id, word, s3_key, mime, clip_id, preferred=False):
+    """Record one personal clip's metadata (the media itself lives in S3 under
+    `s3_key`). Returns the stored row as a dict."""
+    with _lock:
+        _conn.execute(
+            """
+            INSERT OR REPLACE INTO personal_clips
+                (clip_id, user_id, word, s3_key, mime, preferred, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (clip_id, user_id, word, s3_key, mime, 1 if preferred else 0, time.time()),
+        )
+        _conn.commit()
+        row = _conn.execute(
+            "SELECT * FROM personal_clips WHERE clip_id=?", (clip_id,)
+        ).fetchone()
+    return _personal_clip_to_dict(row)
+
+
+def list_personal_clips(user_id):
+    """Every personal clip for a user, newest first."""
+    if not user_id:
+        return []
+    with _lock:
+        rows = _conn.execute(
+            "SELECT * FROM personal_clips WHERE user_id=? ORDER BY created_at DESC",
+            (user_id,),
+        ).fetchall()
+    return [_personal_clip_to_dict(r) for r in rows]
+
+
+def get_personal_clip(user_id, clip_id):
+    """One personal clip scoped to its owner, or None."""
+    with _lock:
+        row = _conn.execute(
+            "SELECT * FROM personal_clips WHERE user_id=? AND clip_id=?",
+            (user_id, clip_id),
+        ).fetchone()
+    return _personal_clip_to_dict(row) if row else None
+
+
+def set_preferred(user_id, clip_id):
+    """Mark one clip preferred and clear the flag on the user's other clips for
+    the same word (at most one preferred per word). Returns the updated clip, or
+    None if it doesn't belong to the user."""
+    with _lock:
+        row = _conn.execute(
+            "SELECT word FROM personal_clips WHERE user_id=? AND clip_id=?",
+            (user_id, clip_id),
+        ).fetchone()
+        if row is None:
+            return None
+        word = row["word"]
+        _conn.execute(
+            "UPDATE personal_clips SET preferred=0 WHERE user_id=? AND word=?",
+            (user_id, word),
+        )
+        _conn.execute(
+            "UPDATE personal_clips SET preferred=1 WHERE user_id=? AND clip_id=?",
+            (user_id, clip_id),
+        )
+        _conn.commit()
+        updated = _conn.execute(
+            "SELECT * FROM personal_clips WHERE clip_id=?", (clip_id,)
+        ).fetchone()
+    return _personal_clip_to_dict(updated)
+
+
+def delete_personal_clip(user_id, clip_id):
+    """Remove a personal clip's metadata. Returns the deleted row (so the caller
+    can delete the S3 object), or None if it wasn't the user's clip."""
+    with _lock:
+        row = _conn.execute(
+            "SELECT * FROM personal_clips WHERE user_id=? AND clip_id=?",
+            (user_id, clip_id),
+        ).fetchone()
+        if row is None:
+            return None
+        deleted = _personal_clip_to_dict(row)
+        _conn.execute(
+            "DELETE FROM personal_clips WHERE user_id=? AND clip_id=?",
+            (user_id, clip_id),
+        )
+        _conn.commit()
+    return deleted
+
+
+def build_override_map(personal_clips, default_map, url_for):
+    """Collapse a user's personal clips into a {normalized-word -> URL} override
+    map for match_gloss. A word's winning clip is its preferred one, else its
+    newest. A clip only overrides when it is preferred OR the word has no default
+    clip — so a plain upload for a word that already has a default is stored but
+    does not change what guests-style matching would return until preferred."""
+    winners = {}
+    for clip in personal_clips or []:
+        word = clip["word"]
+        current = winners.get(word)
+        rank = (1 if clip.get("preferred") else 0, clip.get("created_at") or 0)
+        if current is None or rank > current[0]:
+            winners[word] = (rank, clip)
+
+    overrides = {}
+    for word, ranked in winners.items():
+        clip = ranked[1]
+        if clip.get("preferred") or word not in (default_map or {}):
+            overrides[word] = url_for(clip["s3_key"])
+    return overrides
+
+
+def personalize_chunks(chunks, personal_clips, url_for, default_map=None):
+    """Re-match each chunk's sign clips using a user's personal overrides.
+
+    Pure and store-agnostic: `url_for(s3_key) -> presigned URL` is injected by the
+    caller (app.py) so this never touches S3 directly. Only chunks whose gloss
+    contains an overridden token are recomputed; everything else is returned
+    unchanged. Guests (no personal clips) get the input back untouched."""
+    from services.chunk_processor import _normalize, load_word_map, match_gloss
+
+    if not personal_clips:
+        return chunks
+    resolved_default = default_map if default_map is not None else load_word_map()
+    overrides = build_override_map(personal_clips, resolved_default, url_for)
+    if not overrides:
+        return chunks
+
+    override_words = set(overrides)
+    personalized = []
+    for chunk in chunks:
+        gloss = chunk.get("gloss") or []
+        if override_words & {_normalize(str(token)) for token in gloss}:
+            duration = (chunk.get("video_time_end") or 0) - (chunk.get("video_time_offset") or 0)
+            new_clips = match_gloss(
+                gloss,
+                words=chunk.get("words"),
+                chunk_duration=duration if duration > 0 else None,
+                overrides=overrides,
+            )
+            chunk = {**chunk, "clips": new_clips}
+        personalized.append(chunk)
+    return personalized
 
 
 def _row_to_dict(row):

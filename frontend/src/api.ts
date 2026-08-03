@@ -12,11 +12,27 @@ interface ErrorPayload {
   error?: string;
 }
 
+// The stable opaque app token (set by the auth layer after Firebase sign-in) is
+// attached to every request so the backend can personalize responses per user.
+// A JSON `body` still auto-sets Content-Type; FormData uploads deliberately do not.
+let appToken: string | null = null;
+
+export function setAppToken(token: string | null): void {
+  appToken = token;
+}
+
+function authHeaders(): Record<string, string> {
+  return appToken ? { "X-App-Token": appToken } : {};
+}
+
 async function requestJson<T>(path: string, options?: RequestInit): Promise<T> {
+  const isFormData =
+    typeof FormData !== "undefined" && options?.body instanceof FormData;
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
-      ...(options?.body ? { "Content-Type": "application/json" } : {}),
+      ...(options?.body && !isFormData ? { "Content-Type": "application/json" } : {}),
+      ...authHeaders(),
       ...options?.headers,
     },
   });
@@ -100,4 +116,20 @@ export function getSigns(
   if (query) params.set("q", query);
   if (letter) params.set("letter", letter);
   return requestJson<SignPage>(`/api/signs?${params}`, { signal });
+}
+
+export function createSessionToken(
+  idToken: string,
+  email?: string | null,
+): Promise<{ app_token: string; email: string | null }> {
+  return requestJson("/api/session-token", {
+    method: "POST",
+    body: JSON.stringify({ id_token: idToken, email: email ?? undefined }),
+  });
+}
+
+export function getMe(
+  signal?: AbortSignal,
+): Promise<{ uid: string | null; signed_in: boolean }> {
+  return requestJson("/api/me", { signal });
 }

@@ -199,36 +199,36 @@ export default function HistoryPage() {
       <div className="mx-auto max-w-[1600px]">
         <header className="flex flex-col justify-between gap-4 pb-5 sm:flex-row sm:items-end">
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-neutral-600">Caption workspace</p>
-            <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-white sm:text-3xl">History</h1>
-            <p className="mt-1 max-w-xl text-sm leading-5 text-neutral-500">
+            <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">Caption workspace</p>
+            <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-foreground sm:text-3xl">History</h1>
+            <p className="mt-1 max-w-xl text-sm leading-5 text-muted">
               Review prepared captions, ASL gloss, and the vocabulary clips available for each line.
             </p>
           </div>
           <PrepareDialog onPrepared={prepared} />
         </header>
 
-        <section className="mb-4 grid grid-cols-3 border border-white/10 bg-neutral-950/70" aria-label="History summary">
-          <div className="border-r border-white/10 px-3 py-3 sm:px-4">
-            <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-600">Stored jobs</span>
+        <section className="mb-4 grid grid-cols-3 border border-border bg-background/70" aria-label="History summary">
+          <div className="border-r border-border px-3 py-3 sm:px-4">
+            <span className="font-mono text-[11px] uppercase tracking-wider text-muted">Stored jobs</span>
             <strong className="mt-1 block text-lg font-extrabold tracking-tight">{sessions.length}</strong>
           </div>
-          <div className="border-r border-white/10 px-3 py-3 sm:px-4">
-            <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-600">Ready</span>
+          <div className="border-r border-border px-3 py-3 sm:px-4">
+            <span className="font-mono text-[11px] uppercase tracking-wider text-muted">Ready</span>
             <strong className="mt-1 block text-lg font-extrabold tracking-tight text-accent">{readyCount}</strong>
           </div>
           <div className="px-3 py-3 sm:px-4">
-            <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-600">Matched clips</span>
+            <span className="font-mono text-[11px] uppercase tracking-wider text-muted">Matched clips</span>
             <strong className="mt-1 block text-lg font-extrabold tracking-tight">{signCount}</strong>
           </div>
         </section>
 
         {error && (
           <div className="mb-4 flex items-start justify-between gap-4 border border-red-400/20 bg-red-400/5 px-3 py-2.5" role="alert">
-            <p className="text-xs leading-5 text-red-200/70">{error}</p>
+            <p className="text-xs leading-5 text-red-700 dark:text-red-200/70">{error}</p>
             <button
               type="button"
-              className="focus-ring font-mono text-[10px] text-red-300 hover:text-red-200"
+              className="focus-ring font-mono text-[11px] text-red-600 hover:text-red-700 dark:text-red-300 dark:hover:text-red-200"
               onClick={() => setError("")}
             >
               Dismiss
@@ -236,12 +236,12 @@ export default function HistoryPage() {
           </div>
         )}
 
-        <section className="overflow-hidden border border-white/10 bg-[#0c0c0e] lg:grid lg:grid-cols-[180px_minmax(0,1fr)_220px] xl:grid-cols-[240px_minmax(0,1fr)_300px] 2xl:grid-cols-[280px_minmax(0,1fr)_340px]">
-          <aside className="border-b border-white/10 lg:border-b-0 lg:border-r">
-            <div className="border-b border-white/10 p-3">
+        <section className="overflow-hidden border border-border bg-surface lg:grid lg:grid-cols-[180px_minmax(0,1fr)_220px] xl:grid-cols-[240px_minmax(0,1fr)_300px] 2xl:grid-cols-[280px_minmax(0,1fr)_340px]">
+          <aside className="border-b border-border lg:border-b-0 lg:border-r">
+            <div className="border-b border-border p-3">
               <div className="mb-2 flex items-center justify-between">
-                <h2 className="text-xs font-extrabold tracking-tight text-neutral-300">Prepared videos</h2>
-                <span className="font-mono text-[9px] text-neutral-600">{visibleSessions.length}</span>
+                <h2 className="text-xs font-extrabold tracking-tight text-foreground">Prepared videos</h2>
+                <span className="font-mono text-[11px] text-muted">{visibleSessions.length}</span>
               </div>
               <input
                 type="search"
@@ -249,22 +249,22 @@ export default function HistoryPage() {
                 onChange={(event) => setSessionSearch(event.target.value)}
                 placeholder="Search title or video ID"
                 aria-label="Search prepared videos"
-                className="focus-ring h-9 w-full rounded-md border border-white/10 bg-neutral-950 px-2.5 text-xs text-neutral-200 placeholder:text-neutral-700"
+                className="focus-ring h-9 w-full rounded-md border border-border bg-background px-2.5 text-xs text-foreground placeholder:text-muted"
               />
             </div>
 
             <ScrollArea.Root className="h-64 overflow-hidden lg:h-[calc(100vh-272px)] lg:min-h-[500px]">
               <ScrollArea.Viewport className="size-full">
                 {loadingSessions && !sessions.length && (
-                  <p className="px-3 py-5 font-mono text-[10px] text-neutral-600">Loading history...</p>
+                  <p className="px-3 py-5 font-mono text-[11px] text-muted">Loading history...</p>
                 )}
                 {!loadingSessions && !visibleSessions.length && (
                   <div className="px-4 py-8 text-center">
-                    <p className="text-sm font-bold tracking-tight text-neutral-300">No videos yet</p>
-                    <p className="mt-1 text-xs leading-5 text-neutral-600">Open a captioned YouTube video and prepare it with CaptionAid.</p>
+                    <p className="text-sm font-bold tracking-tight text-foreground">No videos yet</p>
+                    <p className="mt-1 text-xs leading-5 text-muted">Open a captioned YouTube video and prepare it with CaptionAid.</p>
                   </div>
                 )}
-                <div className="divide-y divide-white/10">
+                <div className="divide-y divide-border">
                   {visibleSessions.map((session) => (
                     <button
                       type="button"
@@ -272,28 +272,28 @@ export default function HistoryPage() {
                       onClick={() => setSearchParams({ video: session.video_id })}
                       className={`focus-ring block w-full border-l-2 px-3 py-3 text-left transition-colors ${
                         selected?.video_id === session.video_id
-                          ? "border-l-accent bg-neutral-800/70"
-                          : "border-l-transparent hover:bg-neutral-900"
+                          ? "border-l-accent bg-surface-active"
+                          : "border-l-transparent hover:bg-surface-strong"
                       }`}
                     >
                       <div className="flex items-center justify-between gap-3">
                         <span
-                          className={`font-mono text-[9px] uppercase tracking-wider ${
+                          className={`font-mono text-[11px] uppercase tracking-wider ${
                             session.status === "ready"
                               ? "text-accent"
                               : session.status === "error"
-                                ? "text-red-400"
-                                : "text-amber-300"
+                                ? "text-red-500"
+                                : "text-amber-500"
                           }`}
                         >
                           {session.status}
                         </span>
-                        <span className="font-mono text-[9px] text-neutral-700">{session.chunk_count} lines</span>
+                        <span className="font-mono text-[11px] text-muted">{session.chunk_count} lines</span>
                       </div>
-                      <strong className="mt-1.5 line-clamp-2 block text-xs font-bold leading-4 tracking-tight text-neutral-300">
+                      <strong className="mt-1.5 line-clamp-2 block text-xs font-bold leading-4 tracking-tight text-foreground">
                         {session.title}
                       </strong>
-                      <div className="mt-2 flex items-center justify-between gap-2 font-mono text-[9px] text-neutral-600">
+                      <div className="mt-2 flex items-center justify-between gap-2 font-mono text-[11px] text-muted">
                         <span>{formatDate(session.created_at)}</span>
                         <span>{session.sign_count} clips</span>
                       </div>
@@ -301,8 +301,8 @@ export default function HistoryPage() {
                   ))}
                 </div>
               </ScrollArea.Viewport>
-              <ScrollArea.Scrollbar orientation="vertical" className="flex w-2 bg-neutral-950 p-0.5">
-                <ScrollArea.Thumb className="relative flex-1 rounded-full bg-neutral-700" />
+              <ScrollArea.Scrollbar orientation="vertical" className="flex w-2 bg-background p-0.5">
+                <ScrollArea.Thumb className="relative flex-1 rounded-full bg-surface-active" />
               </ScrollArea.Scrollbar>
             </ScrollArea.Root>
           </aside>
@@ -311,18 +311,18 @@ export default function HistoryPage() {
             {!selected ? (
               <div className="grid min-h-[520px] place-items-center px-6 text-center">
                 <div>
-                  <p className="text-base font-extrabold tracking-tight text-neutral-300">Nothing selected</p>
-                  <p className="mt-1 text-sm text-neutral-600">Prepare a video or choose one from history.</p>
+                  <p className="text-base font-extrabold tracking-tight text-foreground">Nothing selected</p>
+                  <p className="mt-1 text-sm text-muted">Prepare a video or choose one from history.</p>
                 </div>
               </div>
             ) : selected.status !== "ready" ? (
               <div className="grid min-h-[520px] place-items-center px-6 text-center">
                 <div className="max-w-md">
-                  <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-neutral-600">
+                  <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
                     {selected.status}
                   </span>
-                  <h2 className="mt-2 text-lg font-extrabold tracking-tight text-neutral-200">{selected.title}</h2>
-                  <p className="mt-2 text-sm leading-6 text-neutral-600">
+                  <h2 className="mt-2 text-lg font-extrabold tracking-tight text-foreground">{selected.title}</h2>
+                  <p className="mt-2 text-sm leading-6 text-muted">
                     {selected.error || "Caption preparation is still running. Refresh shortly to see the result."}
                   </p>
                   {selected.status === "error" && (
@@ -338,10 +338,10 @@ export default function HistoryPage() {
               </div>
             ) : (
               <>
-                <div className="flex flex-col justify-between gap-3 border-b border-white/10 px-4 py-3 sm:flex-row sm:items-center">
+                <div className="flex flex-col justify-between gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center">
                   <div className="min-w-0">
-                    <h2 className="truncate text-sm font-extrabold tracking-tight text-neutral-100">{selected.title}</h2>
-                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[9px] text-neutral-600">
+                    <h2 className="truncate text-sm font-extrabold tracking-tight text-foreground">{selected.title}</h2>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted">
                       <span>{selected.video_id}</span>
                       <span>{formatClock(selected.duration)}</span>
                       <span>{selected.chunk_count} captions</span>
@@ -356,7 +356,7 @@ export default function HistoryPage() {
                   </div>
                 </div>
 
-                <div className="border-b border-white/10 bg-black">
+                <div className="border-b border-border bg-black">
                   <div className="mx-auto aspect-video max-h-[380px]">
                     <YouTubePlayer
                       videoId={selected.video_id}
@@ -367,18 +367,18 @@ export default function HistoryPage() {
                 </div>
 
                 <Tabs.Root value={mode} onValueChange={(value) => setMode(value as TranscriptMode)}>
-                  <div className="border-b border-white/10 px-3 py-2.5">
+                  <div className="border-b border-border px-3 py-2.5">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <Tabs.List className="inline-flex w-fit rounded-md border border-white/10 bg-neutral-950 p-0.5" aria-label="Transcript display">
+                      <Tabs.List className="inline-flex w-fit rounded-md border border-border bg-background p-0.5" aria-label="Transcript display">
                         <Tabs.Trigger
                           value="english"
-                          className="focus-ring h-7 rounded-[4px] px-3 text-[11px] font-bold text-neutral-500 transition-colors data-[state=active]:bg-neutral-800 data-[state=active]:text-white"
+                          className="focus-ring h-7 rounded-[4px] px-3 text-[11px] font-bold text-muted transition-colors data-[state=active]:bg-surface-active data-[state=active]:text-foreground"
                         >
                           English
                         </Tabs.Trigger>
                         <Tabs.Trigger
                           value="asl"
-                          className="focus-ring h-7 rounded-[4px] px-3 text-[11px] font-bold text-neutral-500 transition-colors data-[state=active]:bg-neutral-800 data-[state=active]:text-accent"
+                          className="focus-ring h-7 rounded-[4px] px-3 text-[11px] font-bold text-muted transition-colors data-[state=active]:bg-surface-active data-[state=active]:text-accent"
                         >
                           ASL gloss
                         </Tabs.Trigger>
@@ -390,27 +390,27 @@ export default function HistoryPage() {
                           onChange={(event) => setTranscriptSearch(event.target.value)}
                           placeholder="Search transcript"
                           aria-label="Search selected transcript"
-                          className="focus-ring h-8 min-w-0 flex-1 rounded-md border border-white/10 bg-neutral-950 px-2.5 text-[11px] text-neutral-200 placeholder:text-neutral-700"
+                          className="focus-ring h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2.5 text-[11px] text-foreground placeholder:text-muted"
                         />
-                        <label className="flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-md border border-white/10 px-2.5 font-mono text-[9px] text-neutral-500 hover:bg-neutral-800/50">
+                        <label className="flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-md border border-border px-2.5 font-mono text-[11px] text-muted hover:bg-surface-strong">
                           <input
                             type="checkbox"
                             checked={matchedOnly}
                             onChange={(event) => setMatchedOnly(event.target.checked)}
-                            className="accent-lime-400"
+                            className="accent-accent"
                           />
                           Matches only
                         </label>
                         <button
                           type="button"
                           onClick={copyTranscript}
-                          className="focus-ring hidden h-8 shrink-0 rounded-md border border-white/10 px-2.5 text-[10px] font-semibold text-neutral-500 hover:bg-neutral-800 hover:text-white sm:block"
+                          className="focus-ring hidden h-8 shrink-0 rounded-md border border-border px-2.5 text-[11px] font-semibold text-muted hover:bg-surface-strong hover:text-foreground sm:block"
                         >
                           {copied ? "Copied" : "Copy"}
                         </button>
                       </div>
                     </div>
-                    <p className="mt-2 font-mono text-[9px] text-neutral-700">
+                    <p className="mt-2 font-mono text-[11px] text-muted">
                       {loadingChunks ? "Loading transcript..." : `${filteredChunks.length} of ${chunks.length} captions`}
                     </p>
                   </div>
@@ -438,14 +438,14 @@ export default function HistoryPage() {
             )}
           </div>
 
-          <aside className="min-w-0 border-t border-white/10 p-3 lg:col-start-auto lg:border-l lg:border-t-0">
+          <aside className="min-w-0 border-t border-border p-3 lg:col-start-auto lg:border-l lg:border-t-0">
             <div className="mb-3 flex items-center justify-between">
               <div>
-                <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-600">Selected caption</p>
-                <h2 className="mt-1 text-xs font-extrabold tracking-tight text-neutral-300">Matched signs</h2>
+                <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">Selected caption</p>
+                <h2 className="mt-1 text-xs font-extrabold tracking-tight text-foreground">Matched signs</h2>
               </div>
               {selectedChunk && (
-                <span className="font-mono text-[9px] text-neutral-600">
+                <span className="font-mono text-[11px] text-muted">
                   {formatClock(selectedChunk.video_time_offset)}
                 </span>
               )}
@@ -481,10 +481,10 @@ export default function HistoryPage() {
               }
             />
             {selectedChunk && (
-              <div className="mt-3 border border-white/10 bg-neutral-950/50 px-3 py-2.5">
-                <p className="text-xs leading-5 text-neutral-400">{selectedChunk.text}</p>
+              <div className="mt-3 border border-border bg-background/50 px-3 py-2.5">
+                <p className="text-xs leading-5 text-foreground/80">{selectedChunk.text}</p>
                 {selectedChunk.gloss.length > 0 && (
-                  <p className="mt-2 font-mono text-[10px] uppercase leading-5 tracking-wide text-accent/80">
+                  <p className="mt-2 font-mono text-[11px] uppercase leading-5 tracking-wide text-accent/80">
                     {selectedChunk.gloss.join(" ")}
                   </p>
                 )}
