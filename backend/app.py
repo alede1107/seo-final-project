@@ -28,6 +28,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # The repository-level .env is the single source of truth for local runs. Using
 # an explicit path makes startup independent of the terminal's current folder.
+# backend/.env is also loaded first as a fill-in (override=False so shell-exported
+# vars still win — e.g. ASSEMBLYAI_API_KEY="" for mock mode), so credentials placed
+# there — S3_BUCKET, AWS keys — are picked up; the repo-root .env stays authoritative.
+load_dotenv(PROJECT_ROOT / "backend" / ".env", override=False)
 load_dotenv(PROJECT_ROOT / ".env", override=True)
 
 for env_key in (
@@ -1029,8 +1033,6 @@ def create_personal_clip():
     uid = _current_uid()
     if not uid:
         return jsonify({"error": "authentication required"}), 401
-    if not S3_BUCKET:
-        return jsonify({"error": "server misconfigured: S3_BUCKET not set"}), 500
 
     video = request.files.get("video")
     if video is None:
@@ -1050,6 +1052,10 @@ def create_personal_clip():
         return jsonify({"error": "empty video file"}), 400
     if len(data) > MAX_CLIP_BYTES:
         return jsonify({"error": "clip exceeds 15 MB limit"}), 413
+
+    # Input is valid; storing the media is the only step that needs S3.
+    if not S3_BUCKET:
+        return jsonify({"error": "server misconfigured: S3_BUCKET not set"}), 500
 
     import secrets
 

@@ -199,6 +199,21 @@ class PersonalClipRouteTests(unittest.TestCase):
             self.client.delete("/api/personal-clips/nope").status_code, 404
         )
 
+    def test_validation_runs_without_s3_but_storage_needs_it(self):
+        # A misconfigured server (no S3_BUCKET) must still return client errors
+        # for bad input — a malformed request should never masquerade as a 500.
+        with patch.object(app_module, "S3_BUCKET", ""):
+            self.assertEqual(
+                self._upload(filename="clip.gif", content_type="image/gif").status_code,
+                415,
+            )
+            self.assertEqual(self._upload(size=16 * 1024 * 1024).status_code, 413)
+            # A *valid* request can't be stored without S3 -> 500 only here.
+            valid = self._upload()
+            self.assertEqual(valid.status_code, 500)
+            self.assertIn("S3_BUCKET", valid.get_json()["error"])
+        self.fake_s3.put_object.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
