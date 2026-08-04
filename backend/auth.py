@@ -28,6 +28,9 @@ def _load_credentials():
         or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
     )
     if path:
+        # Expand a leading ~ and any $VARS — env files store these literally,
+        # but Certificate() opens the path verbatim and would 404 on "~/...".
+        path = os.path.expanduser(os.path.expandvars(path))
         return credentials.Certificate(path)
     # Falls back to workload/application-default credentials when available.
     return credentials.ApplicationDefault()

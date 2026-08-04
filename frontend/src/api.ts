@@ -1,5 +1,6 @@
 import type {
   CaptionChunk,
+  PersonalClip,
   PreparedTranscript,
   PrepareStatus,
   SessionSummary,
@@ -132,4 +133,44 @@ export function getMe(
   signal?: AbortSignal,
 ): Promise<{ uid: string | null; signed_in: boolean }> {
   return requestJson("/api/me", { signal });
+}
+
+export async function listPersonalClips(signal?: AbortSignal): Promise<PersonalClip[]> {
+  const payload = await requestJson<{ clips: PersonalClip[] }>("/api/personal-clips", {
+    signal,
+  });
+  return payload.clips;
+}
+
+export function uploadPersonalClip(
+  word: string,
+  blob: Blob,
+  signal?: AbortSignal,
+): Promise<PersonalClip> {
+  const form = new FormData();
+  form.append("word", word);
+  // A filename is required for Flask to treat the part as a file upload; the
+  // extension is cosmetic (the server keys the stored object off the MIME type).
+  const filename = blob.type === "video/mp4" ? "clip.mp4" : "clip.webm";
+  form.append("video", blob, filename);
+  return requestJson<PersonalClip>("/api/personal-clips", {
+    method: "POST",
+    body: form,
+    signal,
+  });
+}
+
+export function preferPersonalClip(clipId: string): Promise<PersonalClip> {
+  return requestJson<PersonalClip>(`/api/personal-clips/${encodeURIComponent(clipId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ preferred: true }),
+  });
+}
+
+export function deletePersonalClip(
+  clipId: string,
+): Promise<{ ok: boolean; clip_id: string }> {
+  return requestJson(`/api/personal-clips/${encodeURIComponent(clipId)}`, {
+    method: "DELETE",
+  });
 }

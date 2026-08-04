@@ -1,15 +1,18 @@
 import * as ScrollArea from "@radix-ui/react-scroll-area";
 import * as Tabs from "@radix-ui/react-tabs";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { getSessions, getVideoCaptions } from "../api";
+import { getSessions, getVideoCaptions, listPersonalClips } from "../api";
+import { useAuth } from "../auth";
+import AddClipDialog from "../components/AddClipDialog";
 import CaptionTimeline from "../components/CaptionTimeline";
 import DeletePreparedDialog from "../components/DeletePreparedDialog";
 import PrepareDialog from "../components/PrepareDialog";
 import SignSequencePlayer from "../components/SignSequencePlayer";
 import YouTubePlayer, { type YouTubePlaybackState } from "../components/YouTubePlayer";
-import type { CaptionChunk, SessionSummary } from "../types";
+import { computeMissingTokens, NON_ADDABLE, normalizeToken } from "../lib/missing";
+import type { CaptionChunk, PersonalClip, SessionSummary } from "../types";
 import { formatClock, formatDate } from "../utils";
 
 type TranscriptMode = "english" | "asl";
@@ -35,6 +38,10 @@ export default function HistoryPage() {
     playbackRate: 1,
     ready: false,
   });
+  const { appToken } = useAuth();
+  const [personalClips, setPersonalClips] = useState<PersonalClip[]>([]);
+  const [clipsRefreshKey, setClipsRefreshKey] = useState(0);
+  const [addClipWord, setAddClipWord] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,6 +128,40 @@ export default function HistoryPage() {
     return () => controller.abort();
   }, [selected?.video_id, selected?.status]);
 
+  // Load the signed-in user's personal clips (used to populate the Add-clip
+  // dialog's manage list). Guests keep an empty list.
+  useEffect(() => {
+    if (!appToken) {
+      setPersonalClips([]);
+      return;
+    }
+    let cancelled = false;
+    listPersonalClips()
+      .then((clips) => {
+        if (!cancelled) setPersonalClips(clips);
+      })
+      .catch(() => {
+        if (!cancelled) setPersonalClips([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [appToken, clipsRefreshKey]);
+
+  // Refetch captions without resetting the selected line — used after a personal
+  // clip changes so the server re-personalizes the matched signs in place.
+  const reloadCaptions = useCallback(() => {
+    if (!selected || selected.status !== "ready") return;
+    getVideoCaptions(selected.video_id)
+      .then(setChunks)
+      .catch(() => {});
+  }, [selected?.video_id, selected?.status]);
+
+  const clipSaved = useCallback(() => {
+    setClipsRefreshKey((current) => current + 1);
+    reloadCaptions();
+  }, [reloadCaptions]);
+
   const visibleSessions = useMemo(() => {
     const query = sessionSearch.trim().toLowerCase();
     if (!query) return sessions;
@@ -161,6 +202,17 @@ export default function HistoryPage() {
   }, [filteredChunks, videoPlayback.currentTime, videoPlayback.ready]);
 
   const selectedChunk = filteredChunks[activeChunkIndex] || null;
+  const missingTokens = useMemo(
+    () => (selectedChunk ? computeMissingTokens(selectedChunk) : new Set<string>()),
+    [selectedChunk],
+  );
+  const dialogExistingClips = useMemo(
+    () =>
+      addClipWord
+        ? personalClips.filter((clip) => normalizeToken(clip.word) === addClipWord)
+        : [],
+    [addClipWord, personalClips],
+  );
   const readyCount = sessions.filter((session) => session.status === "ready").length;
   const signCount = sessions.reduce((total, session) => total + session.sign_count, 0);
 
@@ -484,15 +536,60 @@ export default function HistoryPage() {
               <div className="mt-3 border border-border bg-background/50 px-3 py-2.5">
                 <p className="text-xs leading-5 text-foreground/80">{selectedChunk.text}</p>
                 {selectedChunk.gloss.length > 0 && (
-                  <p className="mt-2 font-mono text-[11px] uppercase leading-5 tracking-wide text-accent/80">
-                    {selectedChunk.gloss.join(" ")}
-                  </p>
+                  <div
+                    className="mt-2 flex flex-wrap gap-1.5"
+                    role="group"
+                    aria-label="ASL gloss tokens — select one to add a personal sign"
+                  >
+                    {selectedChunk.gloss.map((token, index) => {
+                      const norm = normalizeToken(token);
+                      if (!norm || NON_ADDABLE.has(norm)) {
+                        return (
+                          <span
+                            key={`${token}-${index}`}
+                            className="inline-flex min-h-10 items-center px-1 font-mono text-[11px] uppercase tracking-wide text-muted"
+                          >
+                            {token}
+                          </span>
+                        );
+                      }
+                      const isMissing = missingTokens.has(norm);
+                      return (
+                        <button
+                          key={`${token}-${index}`}
+                          type="button"
+                          onClick={() => setAddClipWord(norm)}
+                          aria-label={
+                            isMissing ? `Missing sign — add one for ${token}` : `Manage sign for ${token}`
+                          }
+                          className={`focus-ring inline-flex min-h-10 items-center gap-1 rounded-md border px-2 font-mono text-[11px] uppercase tracking-wide transition-colors ${
+                            isMissing
+                              ? "border-danger/40 text-danger hover:bg-danger/10"
+                              : "border-border text-accent/90 hover:bg-surface-active"
+                          }`}
+                        >
+                          {isMissing && <span aria-hidden>＋</span>}
+                          {token}
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
             )}
           </aside>
         </section>
       </div>
+
+      <AddClipDialog
+        word={addClipWord}
+        hasDefault={addClipWord ? !missingTokens.has(addClipWord) : false}
+        existingClips={dialogExistingClips}
+        onOpenChange={(open) => {
+          if (!open) setAddClipWord(null);
+        }}
+        onSaved={clipSaved}
+      />
     </div>
   );
 }

@@ -67,6 +67,14 @@ export interface SessionSummary {
   transcript_preview: string;
 }
 
+export interface PersonalClip {
+  clip_id: string;
+  word: string;
+  mime?: string | null;
+  preferred: boolean;
+  url: string;
+}
+
 export interface SignEntry {
   word: string;
   url: string;

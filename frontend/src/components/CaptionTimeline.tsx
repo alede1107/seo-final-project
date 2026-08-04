@@ -1,7 +1,30 @@
 import * as ScrollArea from "@radix-ui/react-scroll-area";
+import type { ReactNode } from "react";
 
+import { computeMissingTokens, normalizeToken } from "../lib/missing";
 import type { CaptionChunk } from "../types";
 import { formatClock } from "../utils";
+
+/**
+ * Render text with any word that maps to a missing gloss token highlighted.
+ * The red is paired with a dotted underline so it is not conveyed by color
+ * alone (per ACCESSIBILITY_GUIDE.md).
+ */
+function highlightMissing(text: string, missing: Set<string>): ReactNode {
+  if (!missing.size) return text;
+  return text.split(/(\s+)/).map((part, index) => {
+    if (!part || /^\s+$/.test(part)) return part;
+    const norm = normalizeToken(part);
+    if (norm && missing.has(norm)) {
+      return (
+        <span key={index} className="text-danger underline decoration-dotted">
+          {part}
+        </span>
+      );
+    }
+    return part;
+  });
+}
 
 interface CaptionTimelineProps {
   chunks: CaptionChunk[];
@@ -37,6 +60,7 @@ export default function CaptionTimeline({
             const gloss = chunk.gloss.join(" ");
             const primary = mode === "asl" ? gloss || "No matched ASL vocabulary" : chunk.text;
             const secondary = mode === "asl" ? chunk.text : gloss;
+            const missing = computeMissingTokens(chunk);
 
             return (
               <li key={`${chunk.session_id}-${chunk.chunk_index}`} className="border-b border-border last:border-b-0">
@@ -62,7 +86,7 @@ export default function CaptionTimeline({
                           : "text-sm font-semibold text-foreground"
                       }`}
                     >
-                      {primary || "No transcript text"}
+                      {highlightMissing(primary || "No transcript text", missing)}
                     </strong>
                     {secondary && (
                       <span

@@ -33,14 +33,20 @@ def _normalize(token: str) -> str:
     return re.sub(r"[^a-z0-9']+", " ", token.lower()).strip()
 
 
-def match_gloss(tokens, words=None, chunk_duration=None) -> list:
+def match_gloss(tokens, words=None, chunk_duration=None, overrides=None) -> list:
     """Map ASL gloss tokens to sign clips in gloss order.
 
     Returns [{"token", "url", "target_duration"}, ...]. target_duration (seconds)
     is how long the clip should play so the full set fits within chunk_duration.
     Proportions come from word-level timing in `words`; falls back to equal
     distribution when timing is unavailable. Tokens with no dictionary entry
-    (e.g. QUESTION-MARK, HERSELF) are skipped."""
+    (e.g. QUESTION-MARK, HERSELF) are skipped.
+
+    `overrides` (normalized-word -> URL) takes precedence over the shared
+    vocabulary map. It is how a signed-in user's personal clips fill a token
+    that has no default clip, or replace a default they've marked preferred.
+    Passing it never changes ordering or duration math — a token simply resolves
+    to the personal URL instead of (or in addition to) the default one."""
     word_map = load_word_map()
     cd = chunk_duration if chunk_duration and chunk_duration > 0 else 10.0
 
@@ -52,11 +58,15 @@ def match_gloss(tokens, words=None, chunk_duration=None) -> list:
         if norm:
             word_dur[norm] = word_dur.get(norm, 0.0) + dur
 
-    # Match tokens to clip URLs and stash per-token word durations.
+    # Match tokens to clip URLs and stash per-token word durations. Personal
+    # overrides win over the shared vocabulary map.
     matched: list[dict] = []
     for token in tokens or []:
         norm = _normalize(str(token))
-        if norm and (url := word_map.get(norm)):
+        if not norm:
+            continue
+        url = (overrides or {}).get(norm) or word_map.get(norm)
+        if url:
             matched.append({
                 "token": str(token).upper(),
                 "url": url,

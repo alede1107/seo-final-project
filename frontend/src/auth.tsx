@@ -15,7 +15,7 @@ import {
   type User,
 } from "firebase/auth";
 
-import { createSessionToken, setAppToken as setApiAppToken } from "./api";
+import { createSessionToken, getMe, setAppToken as setApiAppToken } from "./api";
 import { firebaseEnabled, getFirebaseAuth, googleProvider } from "./firebase";
 
 const TOKEN_STORAGE_KEY = "captionaid.appToken";
@@ -80,10 +80,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setAppToken(null);
         return;
       }
-      // Exchange the Firebase identity for a stable app token once per session.
-      if (localStorage.getItem(TOKEN_STORAGE_KEY) || exchangingRef.current) return;
+      // Exchange the Firebase identity for a stable app token. A stored token is
+      // reused only if the backend still recognizes it — a reset backend DB can
+      // leave a stale token that must be re-minted, otherwise the user looks
+      // signed in but every API call is treated as a guest.
+      if (exchangingRef.current) return;
       exchangingRef.current = true;
       try {
+        const stored = localStorage.getItem(TOKEN_STORAGE_KEY);
+        if (stored) {
+          setApiAppToken(stored);
+          try {
+            const me = await getMe();
+            if (me.signed_in) {
+              setAppToken(stored);
+              return;
+            }
+          } catch {
+            // Fall through to re-mint below.
+          }
+        }
         const idToken = await nextUser.getIdToken();
         const { app_token } = await createSessionToken(idToken, nextUser.email);
         persistToken(app_token);
